@@ -686,6 +686,10 @@ function updateGenerateTokensFromLog(tokens) {
     return;
   currentGenerateTokens2 = Math.max(0, tokens);
 }
+function resetLmStudioStats() {
+  currentPrefillProgress2 = 0;
+  currentGenerateTokens2 = 0;
+}
 function getPrefillProgress2() {
   return currentPrefillProgress2;
 }
@@ -771,6 +775,7 @@ function parseJsonLogLine(line) {
       }
     }
     if (eventType === "chat-end") {
+      resetLmStudioStats();
       return {
         timestamp: new Date,
         model: typeof parsed.model === "string" ? parsed.model : typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : "unknown",
@@ -808,6 +813,13 @@ function parseLogLine(line) {
         progress
       };
     }
+  }
+  if (line.includes("Finished streaming response") || line.includes("chat completion") || line.includes("generation complete") || line.includes("Prompt processing complete")) {
+    return {
+      timestamp: new Date,
+      model: "unknown",
+      type: "chat-end"
+    };
   }
   return null;
 }

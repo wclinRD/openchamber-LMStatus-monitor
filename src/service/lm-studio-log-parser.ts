@@ -158,6 +158,14 @@ export function updateGenerateTokensFromLog(tokens: number): void {
 }
 
 /**
+ * Resets the prefill progress and generate tokens when generation completes or becomes idle.
+ */
+export function resetLmStudioStats(): void {
+  currentPrefillProgress = 0;
+  currentGenerateTokens = 0;
+}
+
+/**
  * Gets the current prefill progress.
  */
 export function getPrefillProgress(): number {
@@ -290,6 +298,8 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
 
     // Check for chat end / generation complete (already determined above)
     if (eventType === 'chat-end') {
+      // Reset prefill and generate stats when generation completes
+      resetLmStudioStats();
       return {
         timestamp: new Date(),
         model: typeof parsed.model === 'string' ? parsed.model : (typeof parsed.modelIdentifier === 'string' ? parsed.modelIdentifier : 'unknown'),
@@ -323,9 +333,10 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
 }
 
 /**
- * Parses a raw log line for prefill progress (fallback method).
+ * Parses a raw log line for prefill progress or completion (fallback method).
  */
 export function parseLogLine(line: string): LmLogEntry | null {
+  // Check for prefill progress
   const prefillMatch = line.match(/Prompt processing progress: ([\d.]+)%/);
   if (prefillMatch?.[1]) {
     const progress = parseFloat(prefillMatch[1]);
@@ -338,6 +349,19 @@ export function parseLogLine(line: string): LmLogEntry | null {
       };
     }
   }
+  
+  // Check for completion events
+  if (line.includes('Finished streaming response') || 
+      line.includes('chat completion') || 
+      line.includes('generation complete') ||
+      line.includes('Prompt processing complete')) {
+    return {
+      timestamp: new Date(),
+      model: 'unknown',
+      type: 'chat-end',
+    };
+  }
+  
   return null;
 }
 
