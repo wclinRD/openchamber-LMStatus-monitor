@@ -187,11 +187,16 @@ export async function proxyChatRequest(
             if (eventType === "chat.start") {
               currentGenerateTokens = 0;
               currentPrefillProgress = 0;
+              console.log("[LM Stat Log] chat_start: generation started");
+            } else if (eventType === "prompt_processing.start" && data) {
+              console.log("[LM Stat Log] prompt_processing_start: processing prompt");
             } else if (eventType === "prompt_processing.progress" && data) {
               try {
                 const parsed = JSON.parse(data) as { progress?: number };
                 if (typeof parsed.progress === "number") {
                   updatePrefillProgress(parsed.progress);
+                  // Log prefill progress for monitoring
+                  console.log(`[LM Stat Log] prefill_progress: ${Math.round(parsed.progress * 100)}%`);
                 }
               } catch {}
             } else if (eventType === "message.delta" && data) {
@@ -201,6 +206,8 @@ export async function proxyChatRequest(
                 if (parsed.content) {
                   // Convert to OpenAI format
                   res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parsed.content } }] })}\n\n`);
+                  // Log current generate token count
+                  console.log(`[LM Stat Log] generate_tokens: ${currentGenerateTokens}`);
                 }
               } catch {}
             } else if (eventType === "reasoning.delta" && data) {
@@ -216,12 +223,18 @@ export async function proxyChatRequest(
                 const parsed = JSON.parse(data) as { result?: { stats?: { total_output_tokens?: number } } };
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   updateGenerateTokens(parsed.result.stats.total_output_tokens);
+                  console.log(`[LM Stat Log] chat_end: total_output_tokens=${parsed.result.stats.total_output_tokens}`);
+                } else {
+                  console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
                 }
                 // Send final chunk with finish_reason
                 res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
                 res.write(`data: [DONE]\n\n`);
               } catch {}
-            } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
+            } else if (eventType === "prompt_processing.end") {
+              currentPrefillProgress = 0;
+              console.log("[LM Stat Log] prompt_processing_end: prefill completed");
+            } else if (eventType === "chat.end") {
               currentPrefillProgress = 0;
             }
           }
