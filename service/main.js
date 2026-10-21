@@ -437,16 +437,38 @@ async function proxyChatRequest(req, res, body) {
     }));
     return;
   }
+  // Convert OpenAI-compatible format (messages) to LM Studio native format (input)
+  let lmStudioBody = {
+    model: chatRequest.model,
+    stream: true
+  };
+  if (chatRequest.input) {
+    lmStudioBody.input = chatRequest.input;
+  } else if (Array.isArray(chatRequest.messages) && chatRequest.messages.length > 0) {
+    const userMessages = chatRequest.messages.filter((m) => m.role === "user");
+    if (userMessages.length > 0) {
+      const lastUserMessage = userMessages[userMessages.length - 1];
+      lmStudioBody.input = lastUserMessage?.content ?? "";
+    } else {
+      const lastMessage = chatRequest.messages[chatRequest.messages.length - 1];
+      lmStudioBody.input = lastMessage?.content ?? "";
+    }
+  }
+  if (chatRequest.temperature !== undefined)
+    lmStudioBody.temperature = chatRequest.temperature;
+  if (chatRequest.max_tokens !== undefined)
+    lmStudioBody.max_tokens = chatRequest.max_tokens;
+  if (chatRequest.context_length !== undefined)
+    lmStudioBody.context_length = chatRequest.context_length;
+  if (chatRequest.store !== undefined)
+    lmStudioBody.store = chatRequest.store;
   try {
     const response = await fetch(LM_STUDIO_V1_URL2, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        ...chatRequest,
-        stream: true
-      })
+      body: JSON.stringify(lmStudioBody)
     });
     if (!response.ok) {
       res.writeHead(response.status, { "Content-Type": "application/json" });
@@ -474,69 +496,61 @@ async function proxyChatRequest(req, res, body) {
 `);
     };
     const processEvents = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done)
-          break;
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split(/\r?\n\r?\n/);
-        buffer = events.pop() ?? "";
-        for (const event of events) {
-          if (!event.startsWith("event: ") || !event.includes("data: "))
-            continue;
-          const lines = event.split(/\r?\n/);
-          let eventType = "";
-          let data = "";
-          for (const line of lines) {
-            if (line.startsWith("event: "))
-              eventType = line.slice(7).trim();
-            if (line.startsWith("data: "))
-              data = line.slice(6).trim();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done)
+            break;
+          if (value) {
+            res.write(value);
           }
-          if (eventType === "prompt_processing.progress" && data) {
-            try {
-              const parsed = JSON.parse(data);
-              if (typeof parsed.progress === "number") {
-                updatePrefillProgress2(parsed.progress);
-                sendEvent("prefill.progress", { progress: parsed.progress });
-              }
-            } catch {}
-          } else if (eventType === "chat.end" && data) {
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.result?.stats?.total_output_tokens !== undefined) {
-                updateGenerateTokens2(parsed.result.stats.total_output_tokens);
-              }
-              sendEvent("chat.end", parsed);
-            } catch {}
-          } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
-            currentPrefillProgress = null;
-          } else if (eventType) {
-            sendEvent(eventType, JSON.parse(data));
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split(/\r?\n\r?\n/);
+          buffer = events.pop() ?? "";
+          for (const event of events) {
+            if (!event.startsWith("event: ") || !event.includes("data: "))
+              continue;
+            const lines = event.split(/\r?\n/);
+            let eventType = "";
+            let data = "";
+            for (const line of lines) {
+              if (line.startsWith("event: "))
+                eventType = line.slice(7).trim();
+              if (line.startsWith("data: "))
+                data = line.slice(6).trim();
+            }
+            if (eventType === "prompt_processing.progress" && data) {
+              try {
+                const parsed = JSON.parse(data);
+                if (typeof parsed.progress === "number") {
+                  updatePrefillProgress2(parsed.progress);
+                  sendEvent("prefill.progress", { progress: parsed.progress });
+                }
+              } catch {}
+            } else if (eventType === "chat.end" && data) {
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.result?.stats?.total_output_tokens !== undefined) {
+                  updateGenerateTokens2(parsed.result.stats.total_output_tokens);
+                }
+                sendEvent("chat.end", parsed);
+              } catch {}
+            } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
+              currentPrefillProgress = null;
+            } else if (eventType) {
+              try {
+                sendEvent(eventType, JSON.parse(data));
+              } catch {}
+            }
           }
         }
+      } catch (error) {
+        console.error("[Chat Proxy] Stream error:", error);
+      } finally {
+        res.end();
       }
     };
     processEvents();
-    const stream = response.body;
-    stream.on("data", (chunk) => {
-      const text = decoder.decode(chunk, { stream: true });
-      const chunks = text.split(/\r?\n\r?\n/);
-      for (const chunkText of chunks) {
-        if (chunkText) {
-          res.write(chunkText + `
-
-`);
-        }
-      }
-    });
-    stream.on("end", () => {
-      res.end();
-    });
-    stream.on("error", (error) => {
-      console.error("[Chat Proxy] Stream error:", error);
-      res.end();
-    });
   } catch (error) {
     console.error("[Chat Proxy] Error:", error);
     res.writeHead(500, { "Content-Type": "application/json" });
