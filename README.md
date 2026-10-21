@@ -3,11 +3,13 @@
 See what your machine is doing and how much of it OpenChamber takes: CPU and memory for the whole system, for OpenChamber and OpenCode with everything they started, and for the dev servers running under them.
 
 Additionally, this extension shows real-time LLM status from LM Studio in the Work Status panel:
-- **LLM Status**: whether a model is mounted (loaded) or unmounted (unloaded)
-- **Prefill**: prompt processing progress percentage
+- **LLM Status**: whether a model is mounted (loaded) or unmounted (unloaded), including loading and error states
+- **Prefill**: prompt processing progress percentage (0-100%)
 - **Generate**: number of tokens generated in the current run
 
-The rail panel has live CPU and memory charts and OpenChamber's footprint split into the app, OpenCode, and the built-in terminal. What an agent or the terminal started is shown as jobs: one row per command (`bun run dev`, `claude`) with the CPU, memory and ports of everything under it, folded by default; unfold one to see the processes in it worth a look. Dev servers are listed with their ports, who started them, and what they cost. A short readout in the chat's Work Status panel shows the same numbers at a glance, plus live LLM inference metrics from LM Studio's REST API.
+The rail panel has live CPU and memory charts and OpenChamber's footprint split into the app, OpenCode, and the built-in terminal. What an agent or the terminal started is shown as jobs: one row per command (`bun run dev`, `claude`) with the CPU, memory and ports of everything under it, folded by default; unfold one to see the processes in it worth a look. Dev servers are listed with their ports, who started them, and what they cost. A short readout in the chat's Work Status panel shows the same numbers at a glance, plus live LLM inference metrics from LM Studio's REST API and SSE (Server-Sent Events) streaming.
+
+The extension includes a **Chat Proxy** for LM Studio local models: when a chat request targets a locally-loaded LM Studio model, the proxy forwards the request to LM Studio's native API and streams the SSE response back to the client. It automatically converts between OpenAI-compatible format (messages array) and LM Studio native format (input string), supporting features like reasoning content, temperature, max tokens, and context length. Cloud LLM requests are not proxied and are handled directly by the client.
 
 Stop on a dev server or a terminal job ends that command with everything it started, so a watcher can't start the server again. Stop all in the Terminal group ends everything running in the terminal and project actions and keeps the tabs open. The service decides what Stop may touch on a fresh read of the tree: OpenChamber itself, the OpenCode server, idle shells, and an agent's job that serves no port (a provider CLI, an MCP server) are refused whatever the panel asks. Processes get SIGTERM, and SIGKILL three seconds later if they are still there; on Windows, `taskkill /T` and then `/F`.
 
