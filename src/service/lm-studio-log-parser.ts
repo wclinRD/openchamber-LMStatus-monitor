@@ -26,6 +26,7 @@ export interface LmLogStats {
 
 let currentPrefillProgress: number = 0;
 let currentGenerateTokens: number = 0;
+let generatedPacketCount: number = 0;
 let logWatcher: ChildProcess | null = null;
 
 /** Log event statistics */
@@ -163,6 +164,7 @@ export function updateGenerateTokensFromLog(tokens: number): void {
 export function resetLmStudioStats(): void {
   currentPrefillProgress = 0;
   currentGenerateTokens = 0;
+  generatedPacketCount = 0;
 }
 
 /**
@@ -375,10 +377,17 @@ export function parseLogLine(line: string): LmLogEntry | null {
       currentPrefillProgress = 0;
       console.log('[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress');
     }
+    
+    // Count generated packets in real-time
+    generatedPacketCount++;
+    currentGenerateTokens = generatedPacketCount;
+    console.log(`[LM Log Parser] Generated packet count: ${generatedPacketCount}`);
+    
     return {
       timestamp: new Date(),
       model: 'unknown',
       type: 'model-output',
+      outputTokens: generatedPacketCount,
     };
   }
   
@@ -451,6 +460,10 @@ function startCliLogWatcher(lmsCli: string): void {
           if (textEntry?.type === 'prefill-progress' && textEntry.progress !== undefined) {
             updatePrefillProgressFromLog(textEntry.progress);
             console.log(`[LM CLI Watcher] prefill_progress (plain text): ${textEntry.progress}%`);
+          } else if (textEntry?.type === 'model-output') {
+            console.log(`[LM CLI Watcher] model-output detected (generated packets: ${generatedPacketCount})`);
+          } else if (textEntry?.type === 'chat-end') {
+            console.log('[LM CLI Watcher] chat_end detected (plain text)');
           }
         }
       }
@@ -515,6 +528,20 @@ function startFileLogWatcher(): void {
         if (latestPrefillProgress !== null) {
           updatePrefillProgressFromLog(latestPrefillProgress);
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
+        }
+        
+        // Count generated packets in real-time
+        let packetCount = 0;
+        for (const line of lines) {
+          if (line && line.includes('Generated packet')) {
+            packetCount++;
+          }
+        }
+        
+        if (packetCount > 0) {
+          generatedPacketCount = packetCount;
+          currentGenerateTokens = packetCount;
+          console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
         }
       } catch {
         // Ignore read errors
