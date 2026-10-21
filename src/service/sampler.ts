@@ -10,6 +10,7 @@ import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tre
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
 import { getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
+import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats } from './lm-studio-log-parser.ts';
 
 export const SAMPLE_INTERVAL_MS = 2_000;
 /** Listening ports change rarely and cost the most to read, so every other sample. */
@@ -208,13 +209,15 @@ export class Sampler {
     }
 
     const lmStudioBase = await fetchLmStudioStatus();
-    const prefillProgress = getPrefillProgress();
-    const generateTokens = getGenerateTokens();
-
+    // Prefer log parser data for live status, fallback to chat-proxy data
+    const prefillProgress = getPrefillProgressFromLog() || getPrefillProgress();
+    const generateTokens = getGenerateTokensFromLog() || getGenerateTokens();
+    
     const lmStudio = {
       ...lmStudioBase,
       prefillProgress: prefillProgress,
       generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens,
+      logStats: getLogStats(),
     };
 
     return {

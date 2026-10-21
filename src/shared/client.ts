@@ -3,7 +3,7 @@
 import { HostRequestError, type HostClient } from '@openchamber/sdk';
 
 import { el } from './dom.ts';
-import type { Snapshot } from './snapshot.ts';
+import type { LmStudioEvent, Snapshot } from './snapshot.ts';
 
 export const POLL_MS = 2_000;
 
@@ -72,6 +72,7 @@ export const startPolling = (
   onFailure: (failure: PollFailure) => void,
 ): { refresh: () => void } => {
   let inflight = false;
+  let pollingInterval = POLL_MS;
   const poll = async (): Promise<void> => {
     if (inflight || !isOnScreen(root)) return;
     inflight = true;
@@ -83,16 +84,23 @@ export const startPolling = (
       } catch {
         body = null;
       }
-      if (result.status === 200 && isSnapshot(body)) onSnapshot(body);
+      if (result.status === 200 && isSnapshot(body)) {
+        onSnapshot(body);
+        // Adaptive polling: faster when generating, slower when idle
+        const lmStudio = (body as Snapshot).lmStudio;
+        const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
+        pollingInterval = isGenerating ? 100 : POLL_MS;
+      }
       else onFailure(result.status === 200 ? 'bad-answer' : 'service-failed');
     } catch (error) {
       onFailure(failureOf(error));
     } finally {
       inflight = false;
+      // Schedule next poll with the current interval
+      setTimeout(() => { void poll(); }, pollingInterval);
     }
   };
   void poll();
-  setInterval(() => { void poll(); }, POLL_MS);
   // Coming back on screen refreshes at once instead of after the next tick.
   // Only the hidden-to-shown change counts: every render resizes the root.
   let shown = isOnScreen(root);

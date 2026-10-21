@@ -111,6 +111,30 @@ export interface LmStudioStatus {
   prefillProgress: number;
   /** Number of tokens generated during the current generation. 0 when idle or not generating. */
   generateTokens: number;
+  /** Log event statistics from LM Studio CLI. */
+  logStats?: {
+    totalEvents: number;
+    byLevel: Record<string, number>;
+    byType: Record<string, number>;
+    sensitiveMarkers: number;
+    prefillProgressEvents: number;
+    chatEndEvents: number;
+  };
+}
+
+/** SSE events for live LM Studio status updates. */
+export type LmStudioEventType =
+  | 'prefill-progress'
+  | 'generate-tokens'
+  | 'chat-start'
+  | 'chat-end';
+
+export interface LmStudioEvent {
+  type: LmStudioEventType;
+  prefillProgress?: number;
+  generateTokens?: number;
+  modelName?: string | null;
+  state?: LmModelState;
 }
 
 export interface Snapshot {

@@ -2,6 +2,7 @@
 // OpenChamber's proxy. `/snapshot` reads; `/stop` ends a dev server or what
 // runs in the terminal, and decides itself what that may include (stop.ts).
 // `/chat` forwards user chat requests to LM Studio and captures SSE events.
+// `/lm-studio-events` pushes live LM Studio status (prefill/generate) via SSE.
 //
 // Sampling runs while someone is looking. Each `/snapshot` request keeps it
 // going; with no request for IDLE_STOP_MS the loop stops, so a closed panel
@@ -12,7 +13,9 @@ import { SAMPLE_INTERVAL_MS, Sampler } from './sampler.ts';
 import { createProcessSource } from './sources.ts';
 import { parseStopTarget } from './stop.ts';
 import { proxyChatRequest, getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
-import type { Snapshot } from '../shared/snapshot.ts';
+import { lmStudioSseClients, pushLmStudioEvent } from './lm-studio-events.ts';
+import { startLogWatcher, getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog } from './lm-studio-log-parser.ts';
+import type { Snapshot, LmStudioEvent } from '../shared/snapshot.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 const token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? '';
@@ -29,6 +32,9 @@ const source = createProcessSource();
 // OpenChamber started this service, so its parent is the app: the Electron
 // main process on desktop, the server process for `openchamber serve`.
 const sampler = new Sampler(source, process.ppid, process.pid);
+
+// Start watching LM Studio server logs for prefill/generate progress
+startLogWatcher();
 
 let latest: Snapshot | null = null;
 let lastRequestAt = 0;
@@ -125,6 +131,28 @@ const server = http.createServer((req, res) => {
     });
     req.on('end', () => {
       void proxyChatRequest(req, res, body);
+    });
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/lm-studio-events') {
+    // Set SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+    // Send initial status
+    const initialEvent: LmStudioEvent = {
+      type: 'chat-end',
+      prefillProgress: latest?.lmStudio.prefillProgress ?? 0,
+      generateTokens: latest?.lmStudio.generateTokens ?? 0,
+    };
+    res.write(`event: lm-studio\n`);
+    res.write(`data: ${JSON.stringify(initialEvent)}\n\n`);
+    lmStudioSseClients.add(res);
+    // Handle client disconnect
+    res.on('close', () => {
+      lmStudioSseClients.delete(res);
     });
     return;
   }

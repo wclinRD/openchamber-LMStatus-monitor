@@ -4,6 +4,7 @@
 
 import http from "node:http";
 import { fetchLmStudioStatus } from './lmstudio.ts';
+import { pushLmStudioEvent } from './lm-studio-events.ts';
 
 const LM_STUDIO_HOST = "127.0.0.1";
 const LM_STUDIO_PORT = 1234;
@@ -188,6 +189,7 @@ export async function proxyChatRequest(
               currentGenerateTokens = 0;
               currentPrefillProgress = 0;
               console.log("[LM Stat Log] chat_start: generation started");
+              pushLmStudioEvent({ type: 'chat-start', prefillProgress: 0, generateTokens: 0 });
             } else if (eventType === "prompt_processing.start" && data) {
               console.log("[LM Stat Log] prompt_processing_start: processing prompt");
             } else if (eventType === "prompt_processing.progress" && data) {
@@ -197,6 +199,7 @@ export async function proxyChatRequest(
                   updatePrefillProgress(parsed.progress);
                   // Log prefill progress for monitoring
                   console.log(`[LM Stat Log] prefill_progress: ${Math.round(parsed.progress * 100)}%`);
+                  pushLmStudioEvent({ type: 'prefill-progress', prefillProgress: Math.round(parsed.progress * 100) });
                 }
               } catch {}
             } else if (eventType === "message.delta" && data) {
@@ -208,6 +211,7 @@ export async function proxyChatRequest(
                   res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parsed.content } }] })}\n\n`);
                   // Log current generate token count
                   console.log(`[LM Stat Log] generate_tokens: ${currentGenerateTokens}`);
+                  pushLmStudioEvent({ type: 'generate-tokens', generateTokens: currentGenerateTokens });
                 }
               } catch {}
             } else if (eventType === "reasoning.delta" && data) {
@@ -224,8 +228,10 @@ export async function proxyChatRequest(
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   updateGenerateTokens(parsed.result.stats.total_output_tokens);
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=${parsed.result.stats.total_output_tokens}`);
+                  pushLmStudioEvent({ type: 'chat-end', generateTokens: parsed.result.stats.total_output_tokens });
                 } else {
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
+                  pushLmStudioEvent({ type: 'chat-end', generateTokens: currentGenerateTokens });
                 }
                 // Send final chunk with finish_reason
                 res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
