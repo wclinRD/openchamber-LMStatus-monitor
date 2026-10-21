@@ -1,7 +1,9 @@
 // src/service/chat-proxy.ts
 // Chat proxy that forwards user chat requests to LM Studio and captures SSE events.
+// Only enabled when the requested model is an LM Studio local model.
 
 import http from "node:http";
+import { fetchLmStudioStatus } from './lmstudio.ts';
 
 const LM_STUDIO_HOST = "127.0.0.1";
 const LM_STUDIO_PORT = 1234;
@@ -14,23 +16,40 @@ interface ChatRequest {
   [key: string]: any;
 }
 
-interface ChatResponse {
+interface LmModelInfo {
   id: string;
-  object: string;
-  created: number;
-  model: string;
-  choices: Array<{ index: number; message: { role: string; content: string } }>;
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
-  stats?: {
-    tokens_per_second: number;
-    time_to_first_token: number;
-    generation_time: number;
-    stop_reason: string;
-  };
+  state: 'loaded' | 'not-loaded' | 'loading';
+  type: string;
+  max_context_length?: number;
 }
 
 let currentPrefillProgress: number | null = null;
 let currentGenerateTokens: number = 0;
+
+/**
+ * Checks if the requested model is an LM Studio local model that is currently loaded.
+ */
+async function isLmStudioModel(modelId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`http://${LM_STUDIO_HOST}:${LM_STUDIO_PORT}/api/v0/models`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) return false;
+
+    const data = await response.json() as { data?: LmModelInfo[] };
+    const models = data.data ?? [];
+
+    // Check if the model exists and is loaded
+    const matchedModel = models.find((m) => m.id === modelId || m.id.endsWith(modelId));
+    return matchedModel !== undefined && matchedModel.state === 'loaded';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Updates the prefill progress from a prompt_processing.progress event.
@@ -69,6 +88,17 @@ export async function proxyChatRequest(
   if (!chatRequest.model || !Array.isArray(chatRequest.messages)) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "invalid-request" }));
+    return;
+  }
+
+  // Only proxy chat requests for LM Studio local models
+  const isLmStudio = await isLmStudioModel(chatRequest.model);
+  if (!isLmStudio) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ 
+      error: "not-lm-studio-model",
+      message: "Chat proxy only supports LM Studio local models. Cloud LLM requests are not proxied."
+    }));
     return;
   }
 

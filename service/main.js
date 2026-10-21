@@ -507,6 +507,24 @@ var LM_STUDIO_PORT2 = 1234;
 var LM_STUDIO_V1_URL2 = `http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v1/chat`;
 var currentPrefillProgress = null;
 var currentGenerateTokens = 0;
+async function isLmStudioModel(modelId) {
+  try {
+    const response = await fetch(`http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v0/models`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+    if (!response.ok)
+      return false;
+    const data = await response.json();
+    const models = data.data ?? [];
+    const matchedModel = models.find((m) => m.id === modelId || m.id.endsWith(modelId));
+    return matchedModel !== undefined && matchedModel.state === "loaded";
+  } catch {
+    return false;
+  }
+}
 function updatePrefillProgress2(progress) {
   if (progress === null || progress < 0 || progress > 1)
     return;
@@ -529,6 +547,15 @@ async function proxyChatRequest(req, res, body) {
   if (!chatRequest.model || !Array.isArray(chatRequest.messages)) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "invalid-request" }));
+    return;
+  }
+  const isLmStudio = await isLmStudioModel(chatRequest.model);
+  if (!isLmStudio) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      error: "not-lm-studio-model",
+      message: "Chat proxy only supports LM Studio local models. Cloud LLM requests are not proxied."
+    }));
     return;
   }
   try {

@@ -4,10 +4,14 @@
  * 
  * Architecture:
  * 1. User sends chat request to monitoring service via /chat endpoint
- * 2. Monitoring service forwards to LM Studio /api/v1/chat?stream=true
- * 3. Service listens to SSE events (prompt_processing.progress, chat.end)
- * 4. Service updates status and streams response back to user
- * 5. Panel polls /snapshot and receives the updated prefill/generate stats
+ * 2. Service checks if the model is an LM Studio local model
+ * 3. If LM Studio model: forwards to LM Studio /api/v1/chat?stream=true
+ * 4. Service listens to SSE events (prompt_processing.progress, chat.end)
+ * 5. Service updates status and streams response back to user
+ * 6. Panel polls /snapshot and receives the updated prefill/generate stats
+ * 
+ * Important: Only LM Studio local models are proxied. Cloud LLM requests
+ * are NOT proxied to preserve original chat functionality.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -38,7 +42,23 @@ class MonitoringServiceProxy {
   private prefillProgress: number | null = null;
   private generateTokens: number = 0;
 
+  // Simulate the model check logic
+  async isLmStudioModel(modelId: string): Promise<boolean> {
+    // In the real implementation, this checks /api/v0/models
+    // For test purposes, we consider models with 'lmstudio' or 'gguf' in the ID as LM Studio models
+    return modelId.includes('lmstudio') || modelId.includes('gguf') || modelId.includes('mlx');
+  }
+
   async forwardChatRequest(model: string, messages: any[]) {
+    const isLmStudio = await this.isLmStudioModel(model);
+    
+    if (!isLmStudio) {
+      return {
+        error: "not-lm-studio-model",
+        message: "Chat proxy only supports LM Studio local models. Cloud LLM requests are not proxied."
+      };
+    }
+
     const mockServer = new MockLmStudioSSEServer(12345);
     const simulatedEvents = [
       { type: 'chat.start', data: { model_instance_id: model } },
@@ -99,35 +119,49 @@ describe('Proxy SSE Architecture Test', () => {
     service = new MonitoringServiceProxy();
   });
 
-  it('should capture prefill progress from SSE events', async () => {
-    const result = await service.forwardChatRequest('test-model', [
+  it('should only proxy LM Studio local models', async () => {
+    // LM Studio model should be proxied
+    const lmStudioResult = await service.forwardChatRequest('lmstudio/llama-3-8b-instruct.q4_k_m.gguf', [
+      { role: 'user', content: 'test message' }
+    ]);
+    expect((lmStudioResult as any).prefillProgress).toBe(75);
+
+    // Cloud LLM model should NOT be proxied
+    const cloudResult = await service.forwardChatRequest('openai/gpt-4o', [
+      { role: 'user', content: 'test message' }
+    ]);
+    expect((cloudResult as any).error).toBe('not-lm-studio-model');
+  });
+
+  it('should capture prefill progress from SSE events for LM Studio models', async () => {
+    const result = await service.forwardChatRequest('mlx-community/qwen2.5-7b-instruct', [
       { role: 'user', content: 'test message' }
     ]);
 
-    expect(result.prefillProgress).toBe(75); // Last progress event was 0.75
-    expect(result.generateTokens).toBe(20);
+    expect((result as any).prefillProgress).toBe(75); // Last progress event was 0.75
+    expect((result as any).generateTokens).toBe(20);
   });
 
   it('should update status when prompt_processing.progress events arrive', async () => {
-    const result = await service.forwardChatRequest('test-model', [
+    const result = await service.forwardChatRequest('gguf/meta-llama-3.1-8b-instruct', [
       { role: 'user', content: 'another test' }
     ]);
 
     // The service should have received and processed the progress events
-    expect(result.prefillProgress).toBeGreaterThanOrEqual(0);
-    expect(result.prefillProgress).toBeLessThanOrEqual(100);
+    expect((result as any).prefillProgress).toBeGreaterThanOrEqual(0);
+    expect((result as any).prefillProgress).toBeLessThanOrEqual(100);
   });
 
   it('should capture total_output_tokens from chat.end event', async () => {
-    const result = await service.forwardChatRequest('test-model', [
+    const result = await service.forwardChatRequest('mlx-community/qwen2-vl-7b-instruct', [
       { role: 'user', content: 'final test' }
     ]);
 
-    expect(result.generateTokens).toBe(20);
+    expect((result as any).generateTokens).toBe(20);
   });
 
   it('should expose current stats via getter methods', async () => {
-    await service.forwardChatRequest('test-model', [
+    await service.forwardChatRequest('lmstudio/test-model.gguf', [
       { role: 'user', content: 'final test' }
     ]);
 
@@ -137,12 +171,7 @@ describe('Proxy SSE Architecture Test', () => {
 });
 
 console.log('Proxy SSE Architecture Test completed.');
-console.log('Conclusion: If all chat requests go through the monitoring service,');
-console.log('the service can capture real-time SSE events and display accurate');
-console.log('Prefill/Generate stats.');
-console.log('');
-console.log('New Architecture:');
-console.log('- /chat endpoint accepts chat requests from the panel/user');
-console.log('- Service forwards to LM Studio /api/v1/chat?stream=true');
-console.log('- Service listens to SSE events and updates prefill/generate stats');
-console.log('- Panel polls /snapshot and receives the updated stats');
+console.log('Conclusion:');
+console.log('- LM Studio local models (gguf, mlx, lmstudio/...) are proxied to capture real-time SSE stats');
+console.log('- Cloud LLM models (openai/..., anthropic/...) are NOT proxied');
+console.log('- This preserves original chat functionality for cloud LLM users');
