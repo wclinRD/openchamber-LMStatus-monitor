@@ -108,7 +108,7 @@ export interface LmStudioStatus {
   /** Whether the model is mounted (loaded) or unmounted (unloaded). */
   state: LmModelState;
   /** Prefill progress percentage, 0-100, when a prompt is being processed. null when idle. */
-  prefillProgress: number | null;
+  prefillProgress: number;
   /** Number of tokens generated during the current generation. 0 when idle or not generating. */
   generateTokens: number;
 }

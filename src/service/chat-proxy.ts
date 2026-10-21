@@ -23,7 +23,7 @@ interface LmModelInfo {
   max_context_length?: number;
 }
 
-let currentPrefillProgress: number | null = null;
+let currentPrefillProgress: number = 0;
 let currentGenerateTokens: number = 0;
 
 /**
@@ -54,8 +54,8 @@ async function isLmStudioModel(modelId: string): Promise<boolean> {
 /**
  * Updates the prefill progress from a prompt_processing.progress event.
  */
-export function updatePrefillProgress(progress: number | null): void {
-  if (progress === null || progress < 0 || progress > 1) return;
+export function updatePrefillProgress(progress: number): void {
+  if (progress < 0 || progress > 1) return;
   currentPrefillProgress = Math.round(progress * 100);
 }
 
@@ -197,7 +197,11 @@ export async function proxyChatRequest(
               if (line.startsWith("data: ")) data = line.slice(6).trim();
             }
 
-            if (eventType === "prompt_processing.progress" && data) {
+            if (eventType === "chat.start" && data) {
+              // Reset stats for new chat
+              currentGenerateTokens = 0;
+              currentPrefillProgress = 0;
+            } else if (eventType === "prompt_processing.progress" && data) {
               try {
                 const parsed = JSON.parse(data) as { progress?: number };
                 if (typeof parsed.progress === "number") {
@@ -214,7 +218,7 @@ export async function proxyChatRequest(
                 sendEvent("chat.end", parsed);
               } catch {}
             } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
-              currentPrefillProgress = null;
+              currentPrefillProgress = 0;
             } else if (eventType) {
               try {
                 sendEvent(eventType, JSON.parse(data));
@@ -242,7 +246,7 @@ export async function proxyChatRequest(
 /**
  * Gets the current prefill progress.
  */
-export function getPrefillProgress(): number | null {
+export function getPrefillProgress(): number {
   return currentPrefillProgress;
 }
 

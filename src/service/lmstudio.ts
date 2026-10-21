@@ -21,14 +21,14 @@ export interface LmModelInfo {
 export interface LmStudioStatus {
   modelName: string | null;
   state: LmModelState;
-  prefillProgress: number | null;
+  prefillProgress: number;
   generateTokens: number;
 }
 
 let currentStatus: LmStudioStatus = {
   modelName: null,
   state: 'unloaded',
-  prefillProgress: null,
+  prefillProgress: 0,
   generateTokens: 0,
 };
 
@@ -111,8 +111,7 @@ export function stateLabel(state: LmModelState): string {
 /**
  * Formats the prefill progress for display.
  */
-export function formatPrefillProgress(progress: number | null): string {
-  if (progress === null) return '—';
+export function formatPrefillProgress(progress: number): string {
   return `${progress}%`;
 }
 

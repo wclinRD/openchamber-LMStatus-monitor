@@ -336,7 +336,7 @@ var LM_STUDIO_V1_URL = `${LM_STUDIO_URL}/api/v1/chat`;
 var currentStatus = {
   modelName: null,
   state: "unloaded",
-  prefillProgress: null,
+  prefillProgress: 0,
   generateTokens: 0
 };
 function updateFromUsage(usage) {
@@ -384,7 +384,7 @@ async function fetchLmStudioStatus() {
 var LM_STUDIO_HOST2 = "127.0.0.1";
 var LM_STUDIO_PORT2 = 1234;
 var LM_STUDIO_V1_URL2 = `http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v1/chat`;
-var currentPrefillProgress = null;
+var currentPrefillProgress = 0;
 var currentGenerateTokens = 0;
 async function isLmStudioModel(modelId) {
   try {
@@ -405,7 +405,7 @@ async function isLmStudioModel(modelId) {
   }
 }
 function updatePrefillProgress2(progress) {
-  if (progress === null || progress < 0 || progress > 1)
+  if (progress < 0 || progress > 1)
     return;
   currentPrefillProgress = Math.round(progress * 100);
 }
@@ -535,8 +535,11 @@ async function proxyChatRequest(req, res, body) {
                 }
                 sendEvent("chat.end", parsed);
               } catch {}
+            } else if (eventType === "chat.start" && data) {
+              currentGenerateTokens = 0;
+              currentPrefillProgress = 0;
             } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
-              currentPrefillProgress = null;
+              currentPrefillProgress = 0;
             } else if (eventType) {
               try {
                 sendEvent(eventType, JSON.parse(data));

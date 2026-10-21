@@ -124,13 +124,8 @@ const render = (snapshot: Snapshot): void => {
   stateValueEl.className = `value num lm-state-${lmStudio.state}`;
 
   const prefillValue = prefillRow.querySelector<HTMLElement>('.value')!;
-  if (lmStudio.prefillProgress !== null) {
-    prefillValue.textContent = `${lmStudio.prefillProgress}%`;
-    prefillMeter.set(lmStudio.prefillProgress);
-  } else {
-    prefillValue.textContent = '—';
-    prefillMeter.set(0);
-  }
+  prefillValue.textContent = `${lmStudio.prefillProgress}%`;
+  prefillMeter.set(lmStudio.prefillProgress);
 
   const generateValue = generateRow.querySelector<HTMLElement>('.value')!;
   generateValue.textContent = lmStudio.generateTokens.toLocaleString();

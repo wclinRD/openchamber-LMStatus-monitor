@@ -213,7 +213,7 @@ export class Sampler {
 
     const lmStudio = {
       ...lmStudioBase,
-      prefillProgress: prefillProgress !== null ? prefillProgress : lmStudioBase.prefillProgress,
+      prefillProgress: prefillProgress,
       generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens,
     };
 
