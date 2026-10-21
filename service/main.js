@@ -527,6 +527,8 @@ async function proxyChatRequest(req, res, body) {
                   sendEvent("prefill.progress", { progress: parsed.progress });
                 }
               } catch {}
+            } else if (eventType === "message.delta" && data) {
+              currentGenerateTokens += 1;
             } else if (eventType === "chat.end" && data) {
               try {
                 const parsed = JSON.parse(data);

@@ -209,7 +209,11 @@ export async function proxyChatRequest(
                   sendEvent("prefill.progress", { progress: parsed.progress });
                 }
               } catch {}
-            } else if (eventType === "chat.end" && data) {
+            } else if (eventType === "message.delta" && data) {
+            // Increment estimated token count during generation
+            // (LM Studio only provides exact count in chat.end stats)
+            currentGenerateTokens += 1;
+          } else if (eventType === "chat.end" && data) {
               try {
                 const parsed = JSON.parse(data) as { result?: { stats?: { total_output_tokens?: number } } };
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
