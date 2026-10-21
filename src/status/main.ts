@@ -117,7 +117,7 @@ const render = (snapshot: Snapshot): void => {
   generateRow.hidden = false;
 
   const { lmStudio } = snapshot;
-  const stateLabel = lmStudio.state === 'loaded' ? '掛載' : lmStudio.state === 'unloaded' ? '卸載' : lmStudio.state === 'loading' ? '載入中' : '錯誤';
+  const stateLabel = lmStudio.state === 'loaded' ? '掛載' : lmStudio.state === 'unloaded' ? '卸載' : lmStudio.state === 'loading' ? `載入中 ${lmStudio.prefillProgress}%` : '錯誤';
   const stateValueEl = lmStateRow.querySelector<HTMLElement>('.value')!;
   stateValueEl.textContent = stateLabel;
   // Add state-specific color class
