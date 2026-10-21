@@ -1,0 +1,51 @@
+{
+  "name": "openchamber-LMStatus-monitor",
+  "version": "1.4.0",
+  "description": "Real-time LLM status from LM Studio: model load/unload state, prefill progress percentage, and generated token count, alongside system resources",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.3.3"
+    },
+    "contributes": {
+      "panel": {
+        "id": "lm-status-monitor",
+        "name": "LM Studio Monitor",
+        "icon": "pulse",
+        "entry": "panel/index.html"
+      },
+      "statusSection": {
+        "entry": "status/index.html",
+        "title": "LM Status",
+        "height": 76
+      },
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "permissions": {
+          "exec": [
+            "ps",
+            "lsof",
+            "vm_stat",
+            "powershell",
+            "netstat",
+            "taskkill"
+          ]
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
+  },
+  "devDependencies": {
+    "@openchamber/sdk": "^2.3.3",
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.9.2"
+  }
+}
