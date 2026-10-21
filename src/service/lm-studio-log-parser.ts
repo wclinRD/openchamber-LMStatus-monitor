@@ -525,28 +525,59 @@ function startFileLogWatcher(): void {
         const content = fs.readFileSync(latestLog, 'utf8');
         const lines = content.split('\n').filter(Boolean);
         
-        // Find the latest prefill progress line by scanning all lines
+        // Find the latest completion or prefill line by scanning from the end
+        let latestEventType: 'chat-end' | 'prefill-progress' | null = null;
         let latestPrefillProgress: number | null = null;
+        let latestPrefillIndex = -1;
+        
         for (let i = lines.length - 1; i >= 0; i--) {
           const line = lines[i];
           if (!line) continue;
+          
+          // Check for completion events first
+          if (line.includes('Finished streaming response') || 
+              line.includes('chat completion') || 
+              line.includes('generation complete') ||
+              line.includes('Prompt processing complete')) {
+            latestEventType = 'chat-end';
+            break;
+          }
+          
           const entry = parseLogLine(line);
           if (entry?.type === 'prefill-progress' && entry.progress !== undefined) {
+            latestEventType = 'prefill-progress';
             latestPrefillProgress = entry.progress;
+            latestPrefillIndex = i;
             break;
           }
         }
         
-        if (latestPrefillProgress !== null) {
-          updatePrefillProgressFromLog(latestPrefillProgress);
+        if (latestEventType === 'chat-end') {
+          // Clear all stats when a conversation ends
+          resetLmStudioStats();
+          console.log('[LM File Watcher] chat-end detected, cleared all stats');
+        } else if (latestEventType === 'prefill-progress') {
+          updatePrefillProgressFromLog(latestPrefillProgress!);
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
+          
+          // Clear generate counter when switching back to prefill phase
+          if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
+            currentGenerateTokens = 0;
+            generatedPacketCount = 0;
+            console.log('[LM File Watcher] Switched back to prefill phase, cleared generate counter');
+          }
         }
         
-        // Count generated packets in real-time
+        // Count generated packets only from the current active session
         let packetCount = 0;
-        for (const line of lines) {
-          if (line && line.includes('Generated packet')) {
-            packetCount++;
+        if (latestEventType === 'prefill-progress' || latestEventType === null) {
+          // Count from the latest prefill progress line onwards
+          const startIndex = latestPrefillIndex >= 0 ? latestPrefillIndex : 0;
+          for (let i = startIndex; i < lines.length; i++) {
+            const line = lines[i];
+            if (line && line.includes('Generated packet')) {
+              packetCount++;
+            }
           }
         }
         
@@ -554,6 +585,10 @@ function startFileLogWatcher(): void {
           generatedPacketCount = packetCount;
           currentGenerateTokens = packetCount;
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
+        } else if (latestEventType === 'chat-end') {
+          // Ensure stats are cleared after chat-end
+          generatedPacketCount = 0;
+          currentGenerateTokens = 0;
         }
       } catch {
         // Ignore read errors

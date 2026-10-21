@@ -948,31 +948,54 @@ function startFileLogWatcher() {
         const content = fs.readFileSync(latestLog, "utf8");
         const lines = content.split(`
 `).filter(Boolean);
+        let latestEventType = null;
         let latestPrefillProgress = null;
+        let latestPrefillIndex = -1;
         for (let i = lines.length - 1;i >= 0; i--) {
           const line = lines[i];
           if (!line)
             continue;
+          if (line.includes("Finished streaming response") || line.includes("chat completion") || line.includes("generation complete") || line.includes("Prompt processing complete")) {
+            latestEventType = "chat-end";
+            break;
+          }
           const entry = parseLogLine(line);
           if (entry?.type === "prefill-progress" && entry.progress !== undefined) {
+            latestEventType = "prefill-progress";
             latestPrefillProgress = entry.progress;
+            latestPrefillIndex = i;
             break;
           }
         }
-        if (latestPrefillProgress !== null) {
+        if (latestEventType === "chat-end") {
+          resetLmStudioStats();
+          console.log("[LM File Watcher] chat-end detected, cleared all stats");
+        } else if (latestEventType === "prefill-progress") {
           updatePrefillProgressFromLog(latestPrefillProgress);
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
+          if (currentGenerateTokens2 > 0 || generatedPacketCount > 0) {
+            currentGenerateTokens2 = 0;
+            generatedPacketCount = 0;
+            console.log("[LM File Watcher] Switched back to prefill phase, cleared generate counter");
+          }
         }
         let packetCount = 0;
-        for (const line of lines) {
-          if (line && line.includes("Generated packet")) {
-            packetCount++;
+        if (latestEventType === "prefill-progress" || latestEventType === null) {
+          const startIndex = latestPrefillIndex >= 0 ? latestPrefillIndex : 0;
+          for (let i = startIndex;i < lines.length; i++) {
+            const line = lines[i];
+            if (line && line.includes("Generated packet")) {
+              packetCount++;
+            }
           }
         }
         if (packetCount > 0) {
           generatedPacketCount = packetCount;
           currentGenerateTokens2 = packetCount;
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
+        } else if (latestEventType === "chat-end") {
+          generatedPacketCount = 0;
+          currentGenerateTokens2 = 0;
         }
       } catch {}
     });
