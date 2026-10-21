@@ -124,11 +124,20 @@ const render = (snapshot: Snapshot): void => {
   stateValueEl.className = `value num lm-state-${lmStudio.state}`;
 
   const prefillValue = prefillRow.querySelector<HTMLElement>('.value')!;
-  prefillValue.textContent = `${lmStudio.prefillProgress}%`;
-  prefillMeter.set(lmStudio.prefillProgress);
-
   const generateValue = generateRow.querySelector<HTMLElement>('.value')!;
-  generateValue.textContent = lmStudio.generateTokens.toLocaleString();
+
+  // Only show prefill/generate values when there's an active generation.
+  // When idle, show "—" to indicate no active inference.
+  const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
+  if (isGenerating) {
+    prefillValue.textContent = `${lmStudio.prefillProgress}%`;
+    prefillMeter.set(lmStudio.prefillProgress);
+    generateValue.textContent = lmStudio.generateTokens.toLocaleString();
+  } else {
+    prefillValue.textContent = '—';
+    prefillMeter.set(0);
+    generateValue.textContent = '—';
+  }
 
   // Dev servers ports
   const allPorts = [...new Set(snapshot.servers.flatMap((s) => s.ports))].sort((a, b) => a - b);
