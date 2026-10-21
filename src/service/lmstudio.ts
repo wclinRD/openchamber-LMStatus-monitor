@@ -76,6 +76,10 @@ export function updateGenerateTokens(totalOutputTokens: number | null): void {
  */
 export function startLmStudioSSE(): void {
   if (sseConnected || sseController) return;
+  if (!currentStatus.modelName) {
+    console.log('[LM Studio SSE] No loaded model, skipping SSE connection');
+    return;
+  }
 
   sseController = new AbortController();
   sseConnected = false;
@@ -88,8 +92,8 @@ export function startLmStudioSSE(): void {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: 'default',
-          messages: [{ role: 'user', content: ' ' }],
+          model: currentStatus.modelName,
+          messages: [{ role: 'user', content: 'test' }],
           stream: true,
         }),
         signal: sseController?.signal,
@@ -114,7 +118,7 @@ export function startLmStudioSSE(): void {
       let buffer = '';
 
       sseConnected = true;
-      console.log('[LM Studio SSE] Connected, listening for inference events...');
+      console.log(`[LM Studio SSE] Connected for model "${currentStatus.modelName}", listening for inference events...`);
 
       while (true) {
         const { done, value } = await reader.read();
@@ -140,23 +144,28 @@ export function startLmStudioSSE(): void {
             try {
               const parsed = JSON.parse(data) as { progress?: number };
               if (typeof parsed.progress === 'number') {
+                console.log(`[LM Studio SSE] prompt_processing.progress: ${parsed.progress}`);
                 updatePrefillProgress(parsed.progress);
               }
-            } catch {
-              // Ignore parse errors for individual events
+            } catch (err) {
+              console.error('[LM Studio SSE] Failed to parse prompt_processing.progress:', err);
             }
           } else if (eventType === 'chat.end' && data) {
             try {
               const parsed = JSON.parse(data) as { result?: { stats?: { total_output_tokens?: number } } };
               if (parsed.result?.stats?.total_output_tokens !== undefined) {
+                console.log(`[LM Studio SSE] chat.end total_output_tokens: ${parsed.result.stats.total_output_tokens}`);
                 updateGenerateTokens(parsed.result.stats.total_output_tokens);
               }
-            } catch {
-              // Ignore parse errors for individual events
+            } catch (err) {
+              console.error('[LM Studio SSE] Failed to parse chat.end:', err);
             }
           } else if (eventType === 'prompt_processing.end' || eventType === 'chat.end') {
             // Reset prefill when generation ends
             resetPrefill();
+            console.log(`[LM Studio SSE] Received ${eventType}, resetting prefill`);
+          } else if (eventType) {
+            console.log(`[LM Studio SSE] Received event: ${eventType}`, data);
           }
         }
       }
