@@ -1,6 +1,7 @@
 // Runs under the app's own Node runtime, on 127.0.0.1, reachable only through
 // OpenChamber's proxy. `/snapshot` reads; `/stop` ends a dev server or what
 // runs in the terminal, and decides itself what that may include (stop.ts).
+// `/chat` forwards user chat requests to LM Studio and captures SSE events.
 //
 // Sampling runs while someone is looking. Each `/snapshot` request keeps it
 // going; with no request for IDLE_STOP_MS the loop stops, so a closed panel
@@ -10,6 +11,7 @@ import http from 'node:http';
 import { SAMPLE_INTERVAL_MS, Sampler } from './sampler.ts';
 import { createProcessSource } from './sources.ts';
 import { parseStopTarget } from './stop.ts';
+import { proxyChatRequest, getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
 import type { Snapshot } from '../shared/snapshot.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -113,6 +115,16 @@ const server = http.createServer((req, res) => {
         (result) => (result ? json(res, 200, result) : json(res, 404, { error: 'not-stoppable' })),
         () => json(res, 500, { error: 'stop-failed' }),
       );
+    });
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/chat') {
+    let body = '';
+    req.on('data', (chunk: Buffer) => {
+      body += chunk.toString('utf8');
+    });
+    req.on('end', () => {
+      void proxyChatRequest(req, res, body);
     });
     return;
   }

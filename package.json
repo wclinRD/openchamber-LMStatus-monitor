@@ -1,6 +1,6 @@
 {
   "name": "openchamber-LMStatus-monitor",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Real-time LLM status from LM Studio: model load/unload state, prefill progress percentage, and generated token count, alongside system resources",
   "private": true,
   "type": "module",

@@ -9,6 +9,7 @@ import { planStop, type StopTarget } from './stop.ts';
 import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tree.ts';
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
+import { getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
 
 export const SAMPLE_INTERVAL_MS = 2_000;
 /** Listening ports change rarely and cost the most to read, so every other sample. */
@@ -206,7 +207,15 @@ export class Sampler {
       }
     }
 
-    const lmStudio = await fetchLmStudioStatus();
+    const lmStudioBase = await fetchLmStudioStatus();
+    const prefillProgress = getPrefillProgress();
+    const generateTokens = getGenerateTokens();
+
+    const lmStudio = {
+      ...lmStudioBase,
+      prefillProgress: prefillProgress !== null ? prefillProgress : lmStudioBase.prefillProgress,
+      generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens,
+    };
 
     return {
       at,

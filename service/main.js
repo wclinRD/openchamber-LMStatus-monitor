@@ -357,6 +357,10 @@ function updateGenerateTokens(totalOutputTokens) {
 function startLmStudioSSE() {
   if (sseConnected || sseController)
     return;
+  if (!currentStatus.modelName) {
+    console.log("[LM Studio SSE] No loaded model, skipping SSE connection");
+    return;
+  }
   sseController = new AbortController;
   sseConnected = false;
   const connect = async () => {
@@ -367,8 +371,8 @@ function startLmStudioSSE() {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "default",
-          messages: [{ role: "user", content: " " }],
+          model: currentStatus.modelName,
+          messages: [{ role: "user", content: "test" }],
           stream: true
         }),
         signal: sseController?.signal
@@ -389,7 +393,7 @@ function startLmStudioSSE() {
       const decoder = new TextDecoder;
       let buffer = "";
       sseConnected = true;
-      console.log("[LM Studio SSE] Connected, listening for inference events...");
+      console.log(`[LM Studio SSE] Connected for model "${currentStatus.modelName}", listening for inference events...`);
       while (true) {
         const { done, value } = await reader.read();
         if (done)
@@ -413,18 +417,27 @@ function startLmStudioSSE() {
             try {
               const parsed = JSON.parse(data);
               if (typeof parsed.progress === "number") {
+                console.log(`[LM Studio SSE] prompt_processing.progress: ${parsed.progress}`);
                 updatePrefillProgress(parsed.progress);
               }
-            } catch {}
+            } catch (err) {
+              console.error("[LM Studio SSE] Failed to parse prompt_processing.progress:", err);
+            }
           } else if (eventType === "chat.end" && data) {
             try {
               const parsed = JSON.parse(data);
               if (parsed.result?.stats?.total_output_tokens !== undefined) {
+                console.log(`[LM Studio SSE] chat.end total_output_tokens: ${parsed.result.stats.total_output_tokens}`);
                 updateGenerateTokens(parsed.result.stats.total_output_tokens);
               }
-            } catch {}
+            } catch (err) {
+              console.error("[LM Studio SSE] Failed to parse chat.end:", err);
+            }
           } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
             resetPrefill();
+            console.log(`[LM Studio SSE] Received ${eventType}, resetting prefill`);
+          } else if (eventType) {
+            console.log(`[LM Studio SSE] Received event: ${eventType}`, data);
           }
         }
       }
@@ -486,6 +499,149 @@ async function fetchLmStudioStatus() {
     currentStatus.state = "error";
     return { ...currentStatus };
   }
+}
+
+// src/service/chat-proxy.ts
+var LM_STUDIO_HOST2 = "127.0.0.1";
+var LM_STUDIO_PORT2 = 1234;
+var LM_STUDIO_V1_URL2 = `http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v1/chat`;
+var currentPrefillProgress = null;
+var currentGenerateTokens = 0;
+function updatePrefillProgress2(progress) {
+  if (progress === null || progress < 0 || progress > 1)
+    return;
+  currentPrefillProgress = Math.round(progress * 100);
+}
+function updateGenerateTokens2(totalOutputTokens) {
+  if (totalOutputTokens === null || totalOutputTokens < 0)
+    return;
+  currentGenerateTokens = Math.max(0, totalOutputTokens);
+}
+async function proxyChatRequest(req, res, body) {
+  let chatRequest;
+  try {
+    chatRequest = JSON.parse(body);
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "bad-request" }));
+    return;
+  }
+  if (!chatRequest.model || !Array.isArray(chatRequest.messages)) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "invalid-request" }));
+    return;
+  }
+  try {
+    const response = await fetch(LM_STUDIO_V1_URL2, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ...chatRequest,
+        stream: true
+      })
+    });
+    if (!response.ok) {
+      res.writeHead(response.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "lm-studio-error", status: response.status }));
+      return;
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "no-stream" }));
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive"
+    });
+    const decoder = new TextDecoder;
+    let buffer = "";
+    const sendEvent = (eventType, data) => {
+      res.write(`event: ${eventType}
+`);
+      res.write(`data: ${JSON.stringify(data)}
+
+`);
+    };
+    const processEvents = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+          break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() ?? "";
+        for (const event of events) {
+          if (!event.startsWith("event: ") || !event.includes("data: "))
+            continue;
+          const lines = event.split(/\r?\n/);
+          let eventType = "";
+          let data = "";
+          for (const line of lines) {
+            if (line.startsWith("event: "))
+              eventType = line.slice(7).trim();
+            if (line.startsWith("data: "))
+              data = line.slice(6).trim();
+          }
+          if (eventType === "prompt_processing.progress" && data) {
+            try {
+              const parsed = JSON.parse(data);
+              if (typeof parsed.progress === "number") {
+                updatePrefillProgress2(parsed.progress);
+                sendEvent("prefill.progress", { progress: parsed.progress });
+              }
+            } catch {}
+          } else if (eventType === "chat.end" && data) {
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.result?.stats?.total_output_tokens !== undefined) {
+                updateGenerateTokens2(parsed.result.stats.total_output_tokens);
+              }
+              sendEvent("chat.end", parsed);
+            } catch {}
+          } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
+            currentPrefillProgress = null;
+          } else if (eventType) {
+            sendEvent(eventType, JSON.parse(data));
+          }
+        }
+      }
+    };
+    processEvents();
+    const stream = response.body;
+    stream.on("data", (chunk) => {
+      const text = decoder.decode(chunk, { stream: true });
+      const chunks = text.split(/\r?\n\r?\n/);
+      for (const chunkText of chunks) {
+        if (chunkText) {
+          res.write(chunkText + `
+
+`);
+        }
+      }
+    });
+    stream.on("end", () => {
+      res.end();
+    });
+    stream.on("error", (error) => {
+      console.error("[Chat Proxy] Stream error:", error);
+      res.end();
+    });
+  } catch (error) {
+    console.error("[Chat Proxy] Error:", error);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "proxy-failed" }));
+  }
+}
+function getPrefillProgress() {
+  return currentPrefillProgress;
+}
+function getGenerateTokens() {
+  return currentGenerateTokens;
 }
 
 // src/service/sampler.ts
@@ -663,7 +819,14 @@ class Sampler {
         push(this.history.app.memory, view.memory);
       }
     }
-    const lmStudio = await fetchLmStudioStatus();
+    const lmStudioBase = await fetchLmStudioStatus();
+    const prefillProgress = getPrefillProgress();
+    const generateTokens = getGenerateTokens();
+    const lmStudio = {
+      ...lmStudioBase,
+      prefillProgress: prefillProgress !== null ? prefillProgress : lmStudioBase.prefillProgress,
+      generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens
+    };
     return {
       at,
       intervalMs: SAMPLE_INTERVAL_MS,
@@ -1195,6 +1358,16 @@ var server = http.createServer((req, res) => {
         return;
       }
       sampler.stop(target).then((result) => result ? json(res, 200, result) : json(res, 404, { error: "not-stoppable" }), () => json(res, 500, { error: "stop-failed" }));
+    });
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/chat") {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk.toString("utf8");
+    });
+    req.on("end", () => {
+      proxyChatRequest(req, res, body);
     });
     return;
   }
