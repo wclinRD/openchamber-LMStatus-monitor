@@ -228,6 +228,12 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
 
     // Handle model prediction output with stats (generate token counts)
     if (eventType === 'model-output') {
+      // Clear prefill progress when transitioning to generate phase
+      if (currentPrefillProgress > 0) {
+        currentPrefillProgress = 0;
+        console.log('[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress');
+      }
+      
       // Extract model identifier
       const model = typeof parsed.modelIdentifier === 'string' ? parsed.modelIdentifier : 
                     typeof parsed.identifier === 'string' ? parsed.identifier :
@@ -333,7 +339,7 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
 }
 
 /**
- * Parses a raw log line for prefill progress or completion (fallback method).
+ * Parses a raw log line for prefill progress, completion, or generate phase (fallback method).
  */
 export function parseLogLine(line: string): LmLogEntry | null {
   // Check for prefill progress
@@ -359,6 +365,20 @@ export function parseLogLine(line: string): LmLogEntry | null {
       timestamp: new Date(),
       model: 'unknown',
       type: 'chat-end',
+    };
+  }
+  
+  // Check for generate phase start (Generated packet indicates model output)
+  if (line.includes('Generated packet') || line.includes('llm.prediction.output')) {
+    // Clear prefill progress when transitioning to generate phase
+    if (currentPrefillProgress > 0) {
+      currentPrefillProgress = 0;
+      console.log('[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress');
+    }
+    return {
+      timestamp: new Date(),
+      model: 'unknown',
+      type: 'model-output',
     };
   }
   

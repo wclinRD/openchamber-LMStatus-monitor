@@ -724,6 +724,10 @@ function parseJsonLogLine(line) {
       logStats.sensitiveMarkers++;
     }
     if (eventType === "model-output") {
+      if (currentPrefillProgress2 > 0) {
+        currentPrefillProgress2 = 0;
+        console.log("[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress");
+      }
       const model = typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : typeof parsed.identifier === "string" ? parsed.identifier : typeof parsed.model === "string" ? parsed.model : "unknown";
       const stats = typeof parsed.stats === "object" && parsed.stats !== null ? parsed.stats : null;
       let outputTokens = null;
@@ -819,6 +823,17 @@ function parseLogLine(line) {
       timestamp: new Date,
       model: "unknown",
       type: "chat-end"
+    };
+  }
+  if (line.includes("Generated packet") || line.includes("llm.prediction.output")) {
+    if (currentPrefillProgress2 > 0) {
+      currentPrefillProgress2 = 0;
+      console.log("[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress");
+    }
+    return {
+      timestamp: new Date,
+      model: "unknown",
+      type: "model-output"
     };
   }
   return null;
