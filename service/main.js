@@ -332,12 +332,122 @@ var HISTORY_POINTS = 90;
 var LM_STUDIO_HOST = "127.0.0.1";
 var LM_STUDIO_PORT = 1234;
 var LM_STUDIO_URL = `http://${LM_STUDIO_HOST}:${LM_STUDIO_PORT}`;
+var LM_STUDIO_V1_URL = `${LM_STUDIO_URL}/api/v1/chat`;
 var currentStatus = {
   modelName: null,
   state: "unloaded",
   prefillProgress: null,
   generateTokens: 0
 };
+var sseController = null;
+var sseConnected = false;
+function updatePrefillProgress(progress) {
+  if (progress === null || progress < 0 || progress > 1)
+    return;
+  currentStatus.prefillProgress = Math.round(progress * 100);
+}
+function resetPrefill() {
+  currentStatus.prefillProgress = null;
+}
+function updateGenerateTokens(totalOutputTokens) {
+  if (totalOutputTokens === null || totalOutputTokens < 0)
+    return;
+  currentStatus.generateTokens = Math.max(0, totalOutputTokens);
+}
+function startLmStudioSSE() {
+  if (sseConnected || sseController)
+    return;
+  sseController = new AbortController;
+  sseConnected = false;
+  const connect = async () => {
+    try {
+      const response = await fetch(LM_STUDIO_V1_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "default",
+          messages: [{ role: "user", content: " " }],
+          stream: true
+        }),
+        signal: sseController?.signal
+      });
+      if (!response.ok) {
+        console.error("[LM Studio SSE] Failed to connect:", response.status, response.statusText);
+        sseController = null;
+        sseConnected = false;
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) {
+        console.error("[LM Studio SSE] No readable stream");
+        sseController = null;
+        sseConnected = false;
+        return;
+      }
+      const decoder = new TextDecoder;
+      let buffer = "";
+      sseConnected = true;
+      console.log("[LM Studio SSE] Connected, listening for inference events...");
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+          break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() ?? "";
+        for (const event of events) {
+          if (!event.startsWith("event: ") || !event.includes("data: "))
+            continue;
+          const lines = event.split(/\r?\n/);
+          let eventType = "";
+          let data = "";
+          for (const line of lines) {
+            if (line.startsWith("event: "))
+              eventType = line.slice(7).trim();
+            if (line.startsWith("data: "))
+              data = line.slice(6).trim();
+          }
+          if (eventType === "prompt_processing.progress" && data) {
+            try {
+              const parsed = JSON.parse(data);
+              if (typeof parsed.progress === "number") {
+                updatePrefillProgress(parsed.progress);
+              }
+            } catch {}
+          } else if (eventType === "chat.end" && data) {
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.result?.stats?.total_output_tokens !== undefined) {
+                updateGenerateTokens(parsed.result.stats.total_output_tokens);
+              }
+            } catch {}
+          } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
+            resetPrefill();
+          }
+        }
+      }
+    } catch (error) {
+      if (sseController?.signal.aborted) {
+        console.log("[LM Studio SSE] Connection closed intentionally");
+      } else {
+        console.error("[LM Studio SSE] Error:", error);
+      }
+    } finally {
+      sseController = null;
+      sseConnected = false;
+    }
+  };
+  connect();
+}
+function stopLmStudioSSE() {
+  if (sseController) {
+    sseController.abort();
+    sseController = null;
+  }
+  sseConnected = false;
+}
 async function fetchLmStudioStatus() {
   try {
     const response = await fetch(`${LM_STUDIO_URL}/api/v0/models`, {
@@ -356,6 +466,9 @@ async function fetchLmStudioStatus() {
     if (loadedModel) {
       currentStatus.modelName = loadedModel.id;
       currentStatus.state = "loaded";
+      if (!sseConnected) {
+        startLmStudioSSE();
+      }
     } else {
       const loadingModel = models.find((m) => m.state === "loading");
       if (loadingModel) {
@@ -365,6 +478,7 @@ async function fetchLmStudioStatus() {
         const notLoaded = models.find((m) => m.state === "not-loaded");
         currentStatus.modelName = notLoaded?.id ?? null;
         currentStatus.state = "unloaded";
+        stopLmStudioSSE();
       }
     }
     return { ...currentStatus };

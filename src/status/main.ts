@@ -37,6 +37,7 @@ const meter = (color: string): { element: HTMLElement; set: (pct: number) => voi
 
 const cpuMeter = meter('var(--oc-info)');
 const memoryMeter = meter('var(--oc-success)');
+const prefillMeter = meter('var(--oc-warning)');
 
 // ----- Status rows -----
 
@@ -63,7 +64,7 @@ const memoryRow = lineRow('Memory', memoryMeter.element, '–');
 // ----- LM Studio rows -----
 
 const lmStateRow = lineRow('LLM Status', null, '—', 'Model load state: mounted (loaded) or unmounted (unloaded).');
-const prefillRow = lineRow('Prefill', null, '—', 'Prompt processing progress percentage.');
+const prefillRow = lineRow('Prefill', prefillMeter.element, '—', 'Prompt processing progress percentage.');
 const generateRow = lineRow('Generate', null, '—', 'Number of tokens generated in the current run.');
 
 // ----- Dev servers ports -----
@@ -125,8 +126,10 @@ const render = (snapshot: Snapshot): void => {
   const prefillValue = prefillRow.querySelector<HTMLElement>('.value')!;
   if (lmStudio.prefillProgress !== null) {
     prefillValue.textContent = `${lmStudio.prefillProgress}%`;
+    prefillMeter.set(lmStudio.prefillProgress);
   } else {
     prefillValue.textContent = '—';
+    prefillMeter.set(0);
   }
 
   const generateValue = generateRow.querySelector<HTMLElement>('.value')!;
