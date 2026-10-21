@@ -714,6 +714,11 @@ function parseJsonLogLine(line) {
         const progress = parseFloat(prefillMatch[1]);
         if (!isNaN(progress) && progress >= 0 && progress <= 100) {
           eventType = "prefill-progress";
+          if (currentGenerateTokens2 > 0 || generatedPacketCount > 0) {
+            currentGenerateTokens2 = 0;
+            generatedPacketCount = 0;
+            console.log("[LM Log Parser] Switched back to prefill phase, cleared generate counter");
+          }
         }
       } else if (message.includes("chat completion") || message.includes("generation complete") || message.includes("Prompt processing complete")) {
         eventType = "chat-end";
@@ -812,6 +817,11 @@ function parseLogLine(line) {
   if (prefillMatch?.[1]) {
     const progress = parseFloat(prefillMatch[1]);
     if (!isNaN(progress)) {
+      if (currentGenerateTokens2 > 0 || generatedPacketCount > 0) {
+        currentGenerateTokens2 = 0;
+        generatedPacketCount = 0;
+        console.log("[LM Log Parser] Switched back to prefill phase via plain text log, cleared generate counter");
+      }
       return {
         timestamp: new Date,
         model: "unknown",
