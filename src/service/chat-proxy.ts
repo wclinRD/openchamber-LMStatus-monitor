@@ -13,6 +13,11 @@ interface ChatRequest {
   model: string;
   messages: Array<{ role: string; content: string }>;
   stream?: boolean;
+  input?: string;
+  temperature?: number;
+  max_tokens?: number;
+  context_length?: number;
+  store?: boolean;
   [key: string]: any;
 }
 
@@ -43,7 +48,6 @@ async function isLmStudioModel(modelId: string): Promise<boolean> {
     const data = await response.json() as { data?: LmModelInfo[] };
     const models = data.data ?? [];
 
-    // Check if the model exists and is loaded
     const matchedModel = models.find((m) => m.id === modelId || m.id.endsWith(modelId));
     return matchedModel !== undefined && matchedModel.state === 'loaded';
   } catch {
@@ -69,7 +73,7 @@ export function updateGenerateTokens(totalOutputTokens: number | null): void {
 
 /**
  * Forwards a chat request to LM Studio and streams the SSE response back to the client.
- * This allows the monitoring service to capture real-time inference stats.
+ * Converts between OpenAI format (client) and LM Studio native format (server).
  */
 export async function proxyChatRequest(
   req: http.IncomingMessage,
@@ -95,7 +99,7 @@ export async function proxyChatRequest(
   const isLmStudio = await isLmStudioModel(chatRequest.model);
   if (!isLmStudio) {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ 
+    res.end(JSON.stringify({
       error: "not-lm-studio-model",
       message: "Chat proxy only supports LM Studio local models. Cloud LLM requests are not proxied."
     }));
@@ -103,31 +107,24 @@ export async function proxyChatRequest(
   }
 
   // Convert OpenAI-compatible format (messages) to LM Studio native format (input)
-  // LM Studio's /api/v1/chat endpoint requires 'input' instead of 'messages'
-  // and does not support including assistant messages
   let lmStudioBody: any = {
     model: chatRequest.model,
     stream: true,
   };
 
   if (chatRequest.input) {
-    // Already in LM Studio native format
     lmStudioBody.input = chatRequest.input;
   } else if (Array.isArray(chatRequest.messages) && chatRequest.messages.length > 0) {
-    // Convert OpenAI messages to LM Studio input format
-    // Extract the last user message as input (LM Studio manages conversation history)
     const userMessages = chatRequest.messages.filter((m: any) => m.role === 'user');
     if (userMessages.length > 0) {
       const lastUserMessage = userMessages[userMessages.length - 1];
       lmStudioBody.input = lastUserMessage?.content ?? '';
     } else {
-      // No user messages, use the last message content
       const lastMessage = chatRequest.messages[chatRequest.messages.length - 1];
       lmStudioBody.input = lastMessage?.content ?? '';
     }
   }
 
-  // Forward additional parameters if present
   if (chatRequest.temperature !== undefined) lmStudioBody.temperature = chatRequest.temperature;
   if (chatRequest.max_tokens !== undefined) lmStudioBody.max_tokens = chatRequest.max_tokens;
   if (chatRequest.context_length !== undefined) lmStudioBody.context_length = chatRequest.context_length;
@@ -155,7 +152,7 @@ export async function proxyChatRequest(
       return;
     }
 
-    // Set SSE response headers
+    // Set SSE response headers (OpenAI format)
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -165,21 +162,11 @@ export async function proxyChatRequest(
     const decoder = new TextDecoder();
     let buffer = "";
 
-    const sendEvent = (eventType: string, data: any) => {
-      res.write(`event: ${eventType}\n`);
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
     const processEvents = async () => {
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-
-          // Forward raw chunk to client
-          if (value) {
-            res.write(value);
-          }
 
           buffer += decoder.decode(value, { stream: true });
           const events = buffer.split(/\r?\n\r?\n/);
@@ -197,8 +184,7 @@ export async function proxyChatRequest(
               if (line.startsWith("data: ")) data = line.slice(6).trim();
             }
 
-            if (eventType === "chat.start" && data) {
-              // Reset stats for new chat
+            if (eventType === "chat.start") {
               currentGenerateTokens = 0;
               currentPrefillProgress = 0;
             } else if (eventType === "prompt_processing.progress" && data) {
@@ -206,27 +192,37 @@ export async function proxyChatRequest(
                 const parsed = JSON.parse(data) as { progress?: number };
                 if (typeof parsed.progress === "number") {
                   updatePrefillProgress(parsed.progress);
-                  sendEvent("prefill.progress", { progress: parsed.progress });
                 }
               } catch {}
             } else if (eventType === "message.delta" && data) {
-            // Increment estimated token count during generation
-            // (LM Studio only provides exact count in chat.end stats)
-            currentGenerateTokens += 1;
-          } else if (eventType === "chat.end" && data) {
+              currentGenerateTokens += 1;
+              try {
+                const parsed = JSON.parse(data) as { content?: string };
+                if (parsed.content) {
+                  // Convert to OpenAI format
+                  res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parsed.content } }] })}\n\n`);
+                }
+              } catch {}
+            } else if (eventType === "reasoning.delta" && data) {
+              try {
+                const parsed = JSON.parse(data) as { content?: string };
+                if (parsed.content) {
+                  // Convert to OpenAI format
+                  res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: parsed.content } }] })}\n\n`);
+                }
+              } catch {}
+            } else if (eventType === "chat.end" && data) {
               try {
                 const parsed = JSON.parse(data) as { result?: { stats?: { total_output_tokens?: number } } };
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   updateGenerateTokens(parsed.result.stats.total_output_tokens);
                 }
-                sendEvent("chat.end", parsed);
+                // Send final chunk with finish_reason
+                res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+                res.write(`data: [DONE]\n\n`);
               } catch {}
             } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
               currentPrefillProgress = 0;
-            } else if (eventType) {
-              try {
-                sendEvent(eventType, JSON.parse(data));
-              } catch {}
             }
           }
         }
@@ -237,9 +233,7 @@ export async function proxyChatRequest(
       }
     };
 
-    // Start processing events (handles both capture and forwarding)
     void processEvents();
-
   } catch (error) {
     console.error("[Chat Proxy] Error:", error);
     res.writeHead(500, { "Content-Type": "application/json" });

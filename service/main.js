@@ -482,22 +482,12 @@ async function proxyChatRequest(req, res, body) {
     });
     const decoder = new TextDecoder;
     let buffer = "";
-    const sendEvent = (eventType, data) => {
-      res.write(`event: ${eventType}
-`);
-      res.write(`data: ${JSON.stringify(data)}
-
-`);
-    };
     const processEvents = async () => {
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done)
             break;
-          if (value) {
-            res.write(value);
-          }
           buffer += decoder.decode(value, { stream: true });
           const events = buffer.split(/\r?\n\r?\n/);
           buffer = events.pop() ?? "";
@@ -513,7 +503,7 @@ async function proxyChatRequest(req, res, body) {
               if (line.startsWith("data: "))
                 data = line.slice(6).trim();
             }
-            if (eventType === "chat.start" && data) {
+            if (eventType === "chat.start") {
               currentGenerateTokens = 0;
               currentPrefillProgress = 0;
             } else if (eventType === "prompt_processing.progress" && data) {
@@ -521,25 +511,42 @@ async function proxyChatRequest(req, res, body) {
                 const parsed = JSON.parse(data);
                 if (typeof parsed.progress === "number") {
                   updatePrefillProgress(parsed.progress);
-                  sendEvent("prefill.progress", { progress: parsed.progress });
                 }
               } catch {}
             } else if (eventType === "message.delta" && data) {
               currentGenerateTokens += 1;
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.content) {
+                  res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: parsed.content } }] })}
+
+`);
+                }
+              } catch {}
+            } else if (eventType === "reasoning.delta" && data) {
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.content) {
+                  res.write(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: parsed.content } }] })}
+
+`);
+                }
+              } catch {}
             } else if (eventType === "chat.end" && data) {
               try {
                 const parsed = JSON.parse(data);
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   updateGenerateTokens(parsed.result.stats.total_output_tokens);
                 }
-                sendEvent("chat.end", parsed);
+                res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}
+
+`);
+                res.write(`data: [DONE]
+
+`);
               } catch {}
             } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
               currentPrefillProgress = 0;
-            } else if (eventType) {
-              try {
-                sendEvent(eventType, JSON.parse(data));
-              } catch {}
             }
           }
         }
