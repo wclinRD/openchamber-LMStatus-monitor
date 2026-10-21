@@ -339,11 +339,6 @@ var currentStatus = {
   prefillProgress: 0,
   generateTokens: 0
 };
-function updateFromUsage(usage) {
-  if (!usage)
-    return;
-  currentStatus.generateTokens = Math.max(0, usage.completion_tokens ?? 0);
-}
 async function fetchLmStudioStatus() {
   try {
     const response = await fetch(`${LM_STUDIO_URL}/api/v0/models`, {
@@ -404,12 +399,12 @@ async function isLmStudioModel(modelId) {
     return false;
   }
 }
-function updatePrefillProgress2(progress) {
+function updatePrefillProgress(progress) {
   if (progress < 0 || progress > 1)
     return;
   currentPrefillProgress = Math.round(progress * 100);
 }
-function updateGenerateTokens2(totalOutputTokens) {
+function updateGenerateTokens(totalOutputTokens) {
   if (totalOutputTokens === null || totalOutputTokens < 0)
     return;
   currentGenerateTokens = Math.max(0, totalOutputTokens);
@@ -437,7 +432,6 @@ async function proxyChatRequest(req, res, body) {
     }));
     return;
   }
-  // Convert OpenAI-compatible format (messages) to LM Studio native format (input)
   let lmStudioBody = {
     model: chatRequest.model,
     stream: true
@@ -519,11 +513,14 @@ async function proxyChatRequest(req, res, body) {
               if (line.startsWith("data: "))
                 data = line.slice(6).trim();
             }
-            if (eventType === "prompt_processing.progress" && data) {
+            if (eventType === "chat.start" && data) {
+              currentGenerateTokens = 0;
+              currentPrefillProgress = 0;
+            } else if (eventType === "prompt_processing.progress" && data) {
               try {
                 const parsed = JSON.parse(data);
                 if (typeof parsed.progress === "number") {
-                  updatePrefillProgress2(parsed.progress);
+                  updatePrefillProgress(parsed.progress);
                   sendEvent("prefill.progress", { progress: parsed.progress });
                 }
               } catch {}
@@ -533,13 +530,10 @@ async function proxyChatRequest(req, res, body) {
               try {
                 const parsed = JSON.parse(data);
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
-                  updateGenerateTokens2(parsed.result.stats.total_output_tokens);
+                  updateGenerateTokens(parsed.result.stats.total_output_tokens);
                 }
                 sendEvent("chat.end", parsed);
               } catch {}
-            } else if (eventType === "chat.start" && data) {
-              currentGenerateTokens = 0;
-              currentPrefillProgress = 0;
             } else if (eventType === "prompt_processing.end" || eventType === "chat.end") {
               currentPrefillProgress = 0;
             } else if (eventType) {
@@ -749,7 +743,7 @@ class Sampler {
     const generateTokens = getGenerateTokens();
     const lmStudio = {
       ...lmStudioBase,
-      prefillProgress: prefillProgress !== null ? prefillProgress : lmStudioBase.prefillProgress,
+      prefillProgress,
       generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens
     };
     return {
