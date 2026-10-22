@@ -712,15 +712,17 @@ function getGenerateTokens2() {
 function parseJsonLogLine(line) {
   try {
     const parsed = JSON.parse(line);
-    const level = typeof parsed.level === "string" ? parsed.level.toLowerCase() : null;
-    const message = typeof parsed.message === "string" ? parsed.message : "";
+    const data = typeof parsed.data === "object" && parsed.data !== null ? parsed.data : null;
+    const level = typeof parsed.level === "string" ? parsed.level.toLowerCase() : typeof data?.level === "string" ? data.level.toLowerCase() : null;
+    const content = typeof parsed.message === "string" ? parsed.message : typeof data?.content === "string" ? data.content : typeof parsed.content === "string" ? parsed.content : "";
+    const structuredType = typeof parsed.type === "string" ? parsed.type : typeof data?.type === "string" ? data.type : "";
     let eventType = "server-event";
-    if (parsed.type === "llm.prediction.output") {
+    if (structuredType === "llm.prediction.output") {
       eventType = "model-output";
-    } else if (parsed.type === "llm.prediction.input") {
+    } else if (structuredType === "llm.prediction.input") {
       eventType = "model-input";
     } else {
-      const prefillMatch = message.match(/Prompt processing progress:\s*([\d.]+)%/);
+      const prefillMatch = content.match(/Prompt processing progress:\s*([\d.]+)%/);
       if (prefillMatch?.[1]) {
         const progress = parseFloat(prefillMatch[1]);
         if (!isNaN(progress) && progress >= 0 && progress <= 100) {
@@ -731,22 +733,24 @@ function parseJsonLogLine(line) {
             console.log("[LM Log Parser] Switched back to prefill phase, cleared generate counter");
           }
         }
-      } else if (message.includes("chat completion") || message.includes("generation complete") || message.includes("Prompt processing complete")) {
+      } else if (content.includes("chat completion") || content.includes("generation complete") || content.includes("Prompt processing complete") || content.includes("Finished streaming response")) {
         eventType = "chat-end";
+      } else if (content.includes("Generated packet") || content.includes("llm.prediction.output")) {
+        eventType = "model-output";
       } else if (level === "info" || level === "warning" || level === "error" || level === "debug") {
         eventType = "server-event";
       }
     }
     recordLogEvent(level, eventType);
-    if (hasSensitiveMarkers(message)) {
+    if (hasSensitiveMarkers(content)) {
       logStats.sensitiveMarkers++;
     }
+    const model = typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : typeof parsed.identifier === "string" ? parsed.identifier : typeof parsed.model === "string" ? parsed.model : typeof data?.modelIdentifier === "string" ? data.modelIdentifier : "unknown";
     if (eventType === "model-output") {
       if (currentPrefillProgress2 > 0) {
         currentPrefillProgress2 = 0;
         console.log("[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress");
       }
-      const model = typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : typeof parsed.identifier === "string" ? parsed.identifier : typeof parsed.model === "string" ? parsed.model : "unknown";
       const stats = typeof parsed.stats === "object" && parsed.stats !== null ? parsed.stats : null;
       let outputTokens = null;
       if (typeof parsed.tokens === "number") {
@@ -758,7 +762,6 @@ function parseJsonLogLine(line) {
       } else if (typeof parsed.generated_tokens === "number") {
         outputTokens = parsed.generated_tokens;
       } else if (stats) {
-        if (typeof stats.tokensPerSecond === "number") {}
         if (typeof stats.outputTokens === "number") {
           outputTokens = stats.outputTokens;
         } else if (typeof stats.total_output_tokens === "number") {
@@ -778,6 +781,16 @@ function parseJsonLogLine(line) {
           outputTokens
         };
       }
+      if (content.includes("Generated packet")) {
+        generatedPacketCount++;
+        updateGenerateTokensFromLog(generatedPacketCount);
+        return {
+          timestamp: new Date,
+          model,
+          type: "model-output",
+          outputTokens: generatedPacketCount
+        };
+      }
       return {
         timestamp: new Date,
         model,
@@ -785,12 +798,13 @@ function parseJsonLogLine(line) {
       };
     }
     if (eventType === "prefill-progress") {
-      const prefillMatch = message.match(/Prompt processing progress:\s*([\d.]+)%/);
+      const prefillMatch = content.match(/Prompt processing progress:\s*([\d.]+)%/);
       if (prefillMatch?.[1]) {
         const progress = parseFloat(prefillMatch[1]);
+        updatePrefillProgressFromLog(progress);
         return {
           timestamp: new Date,
-          model: typeof parsed.model === "string" ? parsed.model : typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : "unknown",
+          model,
           type: "prefill-progress",
           progress
         };
@@ -800,21 +814,21 @@ function parseJsonLogLine(line) {
       resetLmStudioStats();
       return {
         timestamp: new Date,
-        model: typeof parsed.model === "string" ? parsed.model : typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : "unknown",
+        model,
         type: "chat-end"
       };
     }
     if (eventType === "model-input") {
       return {
         timestamp: new Date,
-        model: typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : typeof parsed.model === "string" ? parsed.model : "unknown",
+        model,
         type: "model-input"
       };
     }
     if (eventType === "server-event") {
       return {
         timestamp: new Date,
-        model: typeof parsed.model === "string" ? parsed.model : "unknown",
+        model,
         type: "server-event"
       };
     }
@@ -882,7 +896,7 @@ function startLogWatcher() {
 function startCliLogWatcher(lmsCli) {
   try {
     console.log(`[LM Log Watcher] Using LM Studio CLI: ${lmsCli}`);
-    const cliArgs = ["log", "stream", "--source", "model", "--filter", "output", "--stats", "--json"];
+    const cliArgs = ["log", "stream", "--source", "server", "--json"];
     logWatcher = spawn(lmsCli, cliArgs, {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env }
@@ -892,7 +906,7 @@ function startCliLogWatcher(lmsCli) {
     const fallbackTimeout = setTimeout(() => {
       if (!hasOutput) {
         console.log("[LM CLI Watcher] No JSON output received within 3s, falling back to file-based watcher");
-        setWatcherState({ method: "file", latestLogFile: null });
+        setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
         stopLogWatcher();
         startFileLogWatcher();
       }
@@ -934,20 +948,20 @@ function startCliLogWatcher(lmsCli) {
     logWatcher.on("error", (error) => {
       console.error("[LM CLI Watcher] Error starting CLI watcher:", error.message);
       clearTimeout(fallbackTimeout);
-      setWatcherState({ method: "file", latestLogFile: null });
+      setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
       stopLogWatcher();
       startFileLogWatcher();
     });
     logWatcher.on("exit", (code, signal2) => {
       console.log(`[LM CLI Watcher] exited with code ${code}, signal ${signal2}`);
       clearTimeout(fallbackTimeout);
-      setWatcherState({ method: "file", latestLogFile: null });
+      setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
       stopLogWatcher();
       startFileLogWatcher();
     });
   } catch (error) {
     console.error("[LM CLI Watcher] Failed to start CLI watcher:", error.message);
-    setWatcherState({ method: "file", latestLogFile: null });
+    setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
     stopLogWatcher();
     startFileLogWatcher();
   }
@@ -962,7 +976,7 @@ function startFileLogWatcher() {
       setWatcherState({ method: "file", latestLogFile: null, error: "No log files found" });
       return;
     }
-    setWatcherState({ latestLogFile, method: "file" });
+    setWatcherState({ latestLogFile, method: "file", isWatching: true });
     console.log(`[LM File Watcher] Watching log file: ${latestLogFile}`);
     const watcher = fs.watchFile(latestLogFile, { persistent: true, interval: 1000 }, () => {
       try {
