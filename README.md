@@ -1,6 +1,6 @@
 # LM Studio Monitor for OpenChamber
 
-<img width="20%" width="20%" alt="CleanShot 2026-10-22 at 16 03 46" src="https://github.com/user-attachments/assets/48b021f7-4b8a-4574-9131-7e99831d90a6" />
+
 
 
 See what your machine is doing and how much of it OpenChamber takes: CPU and memory for the whole system, for OpenChamber and OpenCode with everything they started, and for the dev servers running under them.
@@ -9,6 +9,8 @@ Additionally, this extension shows real-time LLM status from LM Studio in the Wo
 - **LLM Status**: whether a model is mounted (loaded) or unmounted (unloaded), including loading and error states
 - **Prefill**: prompt processing progress percentage (0-100%)
 - **Generate**: number of tokens generated in the current run
+
+<img width="30%" width="30%" alt="CleanShot 2026-10-22 at 16 03 46" src="https://github.com/user-attachments/assets/48b021f7-4b8a-4574-9131-7e99831d90a6" />
 
 The rail panel has live CPU and memory charts and OpenChamber's footprint split into the app, OpenCode, and the built-in terminal. What an agent or the terminal started is shown as jobs: one row per command (`bun run dev`, `claude`) with the CPU, memory and ports of everything under it, folded by default; unfold one to see the processes in it worth a look. Dev servers are listed with their ports, who started them, and what they cost. A short readout in the chat's Work Status panel shows the same numbers at a glance, plus live LLM inference metrics from LM Studio's REST API and SSE (Server-Sent Events) streaming.
 
