@@ -1,6 +1,6 @@
 # LM Studio Monitor for OpenChamber
 
-<img width="50%" width="50%" alt="CleanShot 2026-10-22 at 16 03 46" src="https://github.com/user-attachments/assets/48b021f7-4b8a-4574-9131-7e99831d90a6" />
+<img width="20%" width="20%" alt="CleanShot 2026-10-22 at 16 03 46" src="https://github.com/user-attachments/assets/48b021f7-4b8a-4574-9131-7e99831d90a6" />
 
 
 See what your machine is doing and how much of it OpenChamber takes: CPU and memory for the whole system, for OpenChamber and OpenCode with everything they started, and for the dev servers running under them.
