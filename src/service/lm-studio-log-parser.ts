@@ -39,11 +39,39 @@ const logStats: LmLogStats = {
   chatEndEvents: 0,
 };
 
+/** Current log watcher state for debugging */
+export interface LogWatcherState {
+  isWatching: boolean;
+  method: 'cli' | 'file' | 'none';
+  latestLogFile: string | null;
+  error?: string;
+}
+
+let watcherState: LogWatcherState = {
+  isWatching: false,
+  method: 'none',
+  latestLogFile: null,
+};
+
 /**
  * Gets the current log statistics.
  */
 export function getLogStats(): LmLogStats {
   return { ...logStats };
+}
+
+/**
+ * Gets the current log watcher state for debugging.
+ */
+export function getLogWatcherState(): LogWatcherState {
+  return { ...watcherState };
+}
+
+/**
+ * Sets the log watcher state.
+ */
+function setWatcherState(state: Omit<LogWatcherState, 'isWatching'> & Partial<LogWatcherState>): void {
+  watcherState = { ...watcherState, ...state };
 }
 
 /**
@@ -415,9 +443,12 @@ export function startLogWatcher(): void {
 
   const lmsCli = findLmsCli();
   if (lmsCli) {
+    setWatcherState({ method: 'cli', latestLogFile: null, isWatching: true });
+    console.log('[LM Log Watcher] Starting CLI log watcher using:', lmsCli);
     startCliLogWatcher(lmsCli);
   } else {
     console.log('[LM Log Watcher] LM Studio CLI not found, falling back to file-based log parsing');
+    setWatcherState({ method: 'file', latestLogFile: null, isWatching: true });
     startFileLogWatcher();
   }
 }
@@ -444,6 +475,7 @@ function startCliLogWatcher(lmsCli: string): void {
     const fallbackTimeout = setTimeout(() => {
       if (!hasOutput) {
         console.log('[LM CLI Watcher] No JSON output received within 3s, falling back to file-based watcher');
+        setWatcherState({ method: 'file', latestLogFile: null });
         stopLogWatcher();
         startFileLogWatcher();
       }
@@ -488,6 +520,7 @@ function startCliLogWatcher(lmsCli: string): void {
     logWatcher.on('error', (error) => {
       console.error('[LM CLI Watcher] Error starting CLI watcher:', error.message);
       clearTimeout(fallbackTimeout);
+      setWatcherState({ method: 'file', latestLogFile: null });
       stopLogWatcher();
       startFileLogWatcher();
     });
@@ -495,11 +528,13 @@ function startCliLogWatcher(lmsCli: string): void {
     logWatcher.on('exit', (code, signal) => {
       console.log(`[LM CLI Watcher] exited with code ${code}, signal ${signal}`);
       clearTimeout(fallbackTimeout);
+      setWatcherState({ method: 'file', latestLogFile: null });
       stopLogWatcher();
       startFileLogWatcher();
     });
   } catch (error) {
     console.error('[LM CLI Watcher] Failed to start CLI watcher:', (error as Error).message);
+    setWatcherState({ method: 'file', latestLogFile: null });
     stopLogWatcher();
     startFileLogWatcher();
   }
@@ -514,15 +549,19 @@ function startFileLogWatcher(): void {
 
   try {
     // Watch the latest log file in the log directory
-    const latestLog = getLatestLogFile(logDir);
-    if (!latestLog) {
-      console.log('[LM Log Watcher] No log files found in', logDir);
+    const latestLogFile = getLatestLogFile(logDir);
+    if (!latestLogFile) {
+      console.log('[LM File Watcher] No log files found in', logDir);
+      setWatcherState({ method: 'file', latestLogFile: null, error: 'No log files found' });
       return;
     }
 
-    const watcher = fs.watchFile(latestLog, { persistent: true, interval: 1000 }, () => {
+    setWatcherState({ latestLogFile: latestLogFile, method: 'file' });
+    console.log(`[LM File Watcher] Watching log file: ${latestLogFile}`);
+
+    const watcher = fs.watchFile(latestLogFile, { persistent: true, interval: 1000 }, () => {
       try {
-        const content = fs.readFileSync(latestLog, 'utf8');
+        const content = fs.readFileSync(latestLogFile, 'utf8');
         const lines = content.split('\n').filter(Boolean);
         
         // Find the latest completion or prefill line by scanning from the end
@@ -590,8 +629,8 @@ function startFileLogWatcher(): void {
           generatedPacketCount = 0;
           currentGenerateTokens = 0;
         }
-      } catch {
-        // Ignore read errors
+      } catch (error) {
+        console.error('[LM File Watcher] Error reading log file:', (error as Error).message);
       }
     });
 
@@ -599,10 +638,11 @@ function startFileLogWatcher(): void {
       stdout: { on: () => {} },
       stderr: { on: () => {} },
       on: () => {},
-      kill: () => { fs.unwatchFile(latestLog); },
+      kill: () => { fs.unwatchFile(latestLogFile); },
     } as unknown as ChildProcess;
-  } catch {
-    console.error('[LM File Watcher] Failed to start file watcher');
+  } catch (error) {
+    console.error('[LM File Watcher] Failed to start file watcher:', (error as Error).message);
+    setWatcherState({ method: 'file', latestLogFile: null, error: (error as Error).message });
   }
 }
 
@@ -618,6 +658,7 @@ export function stopLogWatcher(): void {
     }
     logWatcher = null;
   }
+  setWatcherState({ isWatching: false, method: 'none', latestLogFile: null });
 }
 
 /**

@@ -14,7 +14,7 @@ import { createProcessSource } from './sources.ts';
 import { parseStopTarget } from './stop.ts';
 import { proxyChatRequest, getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
 import { lmStudioSseClients, pushLmStudioEvent } from './lm-studio-events.ts';
-import { startLogWatcher, getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog } from './lm-studio-log-parser.ts';
+import { startLogWatcher, getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogWatcherState } from './lm-studio-log-parser.ts';
 import type { Snapshot, LmStudioEvent } from '../shared/snapshot.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -154,6 +154,10 @@ const server = http.createServer((req, res) => {
     res.on('close', () => {
       lmStudioSseClients.delete(res);
     });
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/log-status') {
+    json(res, 200, getLogWatcherState());
     return;
   }
   if (req.method !== 'GET' || url.pathname !== '/snapshot') {
