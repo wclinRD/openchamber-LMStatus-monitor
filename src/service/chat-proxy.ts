@@ -61,7 +61,7 @@ async function isLmStudioModel(modelId: string): Promise<boolean> {
  */
 export function updatePrefillProgress(progress: number): void {
   if (progress < 0 || progress > 1) return;
-  currentPrefillProgress = Math.round(progress * 100);
+  currentPrefillProgress = progress * 100;
 }
 
 /**

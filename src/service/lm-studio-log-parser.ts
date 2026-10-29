@@ -175,7 +175,7 @@ function execFileSync(file: string, args: string[], options: { timeout: number }
  */
 export function updatePrefillProgressFromLog(progress: number): void {
   if (progress < 0 || progress > 100) return;
-  currentPrefillProgress = Math.round(progress);
+  currentPrefillProgress = progress;
 }
 
 /**
