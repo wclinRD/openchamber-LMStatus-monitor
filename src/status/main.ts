@@ -37,7 +37,7 @@ const meter = (color: string): { element: HTMLElement; set: (pct: number) => voi
 
 const cpuMeter = meter('var(--oc-info)');
 const memoryMeter = meter('var(--oc-success)');
-const prefillMeter = meter('var(--oc-warning)');
+const prefillMeter = meter('var(--oc-success)');
 
 // ----- Status rows -----
 
