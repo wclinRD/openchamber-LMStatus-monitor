@@ -419,7 +419,7 @@ async function isLmStudioModel(modelId) {
 function updatePrefillProgress(progress) {
   if (progress < 0 || progress > 1)
     return;
-  currentPrefillProgress = Math.round(progress * 100);
+  currentPrefillProgress = progress * 100;
 }
 function updateGenerateTokens(totalOutputTokens) {
   if (totalOutputTokens === null || totalOutputTokens < 0)
@@ -691,7 +691,7 @@ function execFileSync(file, args, options) {
 function updatePrefillProgressFromLog(progress) {
   if (progress < 0 || progress > 100)
     return;
-  currentPrefillProgress2 = Math.round(progress);
+  currentPrefillProgress2 = progress;
 }
 function updateGenerateTokensFromLog(tokens) {
   if (tokens < 0)
