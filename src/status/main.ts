@@ -3,7 +3,7 @@ import { connectHost } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 
 import { POLL_MS, portButton, type PollFailure } from '../shared/client.ts';
-import { formatBytes, formatPercent } from '../shared/format.ts';
+import { formatBytes, formatPercent, formatPrefillPercent } from '../shared/format.ts';
 import { el } from '../shared/dom.ts';
 import { BASE_STYLE, PANEL_STYLE, STATUS_STYLE } from '../shared/style.ts';
 import { HISTORY_POINTS, type Snapshot } from '../shared/snapshot.ts';
@@ -117,7 +117,42 @@ const render = (snapshot: Snapshot): void => {
   generateRow.hidden = false;
 
   const { lmStudio } = snapshot;
-  const stateLabel = lmStudio.state === 'loaded' ? '掛載' : lmStudio.state === 'unloaded' ? '卸載' : lmStudio.state === 'loading' ? `載入中 ${lmStudio.prefillProgress}%` : '錯誤';
+  let stateLabel: string;
+  if (lmStudio.modelName) {
+    switch (lmStudio.state) {
+      case 'loaded':
+        stateLabel = `${lmStudio.modelName} · 掛載`;
+        break;
+      case 'loading':
+        stateLabel = `${lmStudio.modelName} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
+        break;
+      case 'unloaded':
+        stateLabel = `${lmStudio.modelName} · 卸載`;
+        break;
+      case 'error':
+        stateLabel = `${lmStudio.modelName} · 錯誤`;
+        break;
+      default:
+        stateLabel = lmStudio.modelName;
+    }
+  } else {
+    switch (lmStudio.state) {
+      case 'loaded':
+        stateLabel = '掛載';
+        break;
+      case 'unloaded':
+        stateLabel = '卸載';
+        break;
+      case 'loading':
+        stateLabel = `載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
+        break;
+      case 'error':
+        stateLabel = '錯誤';
+        break;
+      default:
+        stateLabel = '—';
+    }
+  }
   const stateValueEl = lmStateRow.querySelector<HTMLElement>('.value')!;
   stateValueEl.textContent = stateLabel;
   // Add state-specific color class
@@ -130,7 +165,7 @@ const render = (snapshot: Snapshot): void => {
   // When idle, show "—" to indicate no active inference.
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
   if (isGenerating) {
-    prefillValue.textContent = `${lmStudio.prefillProgress}%`;
+    prefillValue.textContent = formatPrefillPercent(lmStudio.prefillProgress);
     prefillMeter.set(lmStudio.prefillProgress);
     generateValue.textContent = lmStudio.generateTokens.toLocaleString();
   } else {

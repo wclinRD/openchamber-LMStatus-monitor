@@ -30,6 +30,9 @@ export const formatPercent = (value: number | null): string => {
   return `${number(value, value < 10 ? 1 : 0)}%`;
 };
 
+/** Prefill progress as a percentage with exactly one decimal place. */
+export const formatPrefillPercent = (value: number): string => `${number(value, 1)}%`;
+
 export const formatUptime = (seconds: number): string => {
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3_600);
