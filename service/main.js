@@ -337,22 +337,66 @@ var currentStatus = {
   modelName: null,
   state: "unloaded",
   prefillProgress: 0,
-  generateTokens: 0
+  generateTokens: 0,
+  models: []
 };
 async function fetchLmStudioStatus() {
   try {
-    const response = await fetch(`${LM_STUDIO_URL}/api/v0/models`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json"
-      }
-    });
-    if (!response.ok) {
+    const [v0Response, v1Response] = await Promise.all([
+      fetch(`${LM_STUDIO_URL}/api/v0/models`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
+      }),
+      fetch(`${LM_STUDIO_URL}/api/v1/models`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
+      }).catch(() => null)
+    ]);
+    if (!v0Response.ok) {
       currentStatus.state = "error";
       return { ...currentStatus };
     }
-    const data = await response.json();
+    const data = await v0Response.json();
     const models = data.data ?? [];
+    let v1Models = [];
+    if (v1Response && v1Response.ok) {
+      try {
+        const v1Data = await v1Response.json();
+        v1Models = v1Data.models ?? [];
+      } catch {
+        v1Models = [];
+      }
+    }
+    const v1Map = new Map;
+    for (const m of v1Models) {
+      const key = m.key ?? m.id;
+      if (key)
+        v1Map.set(key, m);
+    }
+    currentStatus.models = models.map((m) => {
+      const v1 = v1Map.get(m.id) ?? v1Map.get(m.key ?? m.id);
+      const quant = typeof m.quantization === "object" && m.quantization ? m.quantization.name : typeof m.quantization === "string" ? m.quantization : undefined;
+      const v1Quant = v1 && typeof v1.quantization === "object" && v1.quantization ? v1.quantization.name : typeof v1?.quantization === "string" ? v1.quantization : undefined;
+      const bits = typeof m.quantization === "object" && m.quantization ? m.quantization.bits_per_weight : typeof v1?.quantization === "object" && v1.quantization ? v1.quantization.bits_per_weight : undefined;
+      return {
+        id: m.id,
+        state: m.state,
+        type: m.type ?? v1?.type,
+        publisher: m.publisher ?? v1?.publisher,
+        arch: m.arch ?? v1?.arch ?? v1?.architecture,
+        compatibilityType: m.compatibility_type ?? v1?.compatibility_type ?? v1?.format,
+        quantization: v1Quant ?? quant,
+        maxContextLength: m.max_context_length ?? v1?.max_context_length,
+        loadedContextLength: m.loaded_context_length ?? v1?.loaded_context_length,
+        capabilities: v1?.capabilities ?? m.capabilities,
+        displayName: v1?.display_name,
+        paramsString: v1?.params_string,
+        sizeBytes: v1?.size_bytes,
+        bitsPerWeight: bits,
+        format: v1?.format ?? m.format,
+        loadedInstances: v1?.loaded_instances ?? (v1 ? v1.loadedInstances : undefined)
+      };
+    });
     const loadedModel = models.find((m) => m.state === "loaded");
     if (loadedModel) {
       currentStatus.modelName = loadedModel.id;
@@ -371,6 +415,7 @@ async function fetchLmStudioStatus() {
     return { ...currentStatus };
   } catch {
     currentStatus.state = "error";
+    currentStatus.models = currentStatus.models ?? [];
     return { ...currentStatus };
   }
 }
@@ -611,6 +656,7 @@ var currentPrefillProgress2 = 0;
 var currentGenerateTokens2 = 0;
 var generatedPacketCount = 0;
 var logWatcher = null;
+var lastLogUpdateAt = 0;
 var logStats = {
   totalEvents: 0,
   byLevel: {},
@@ -629,6 +675,11 @@ function getLogStats() {
 }
 function getLogWatcherState() {
   return { ...watcherState };
+}
+function hasRecentLogActivity(windowMs = 1e4) {
+  if (lastLogUpdateAt === 0)
+    return false;
+  return Date.now() - lastLogUpdateAt < windowMs;
 }
 function setWatcherState(state) {
   watcherState = { ...watcherState, ...state };
@@ -692,16 +743,19 @@ function updatePrefillProgressFromLog(progress) {
   if (progress < 0 || progress > 100)
     return;
   currentPrefillProgress2 = progress;
+  lastLogUpdateAt = Date.now();
 }
 function updateGenerateTokensFromLog(tokens) {
   if (tokens < 0)
     return;
   currentGenerateTokens2 = Math.max(0, tokens);
+  lastLogUpdateAt = Date.now();
 }
 function resetLmStudioStats() {
   currentPrefillProgress2 = 0;
   currentGenerateTokens2 = 0;
   generatedPacketCount = 0;
+  lastLogUpdateAt = Date.now();
 }
 function getPrefillProgress2() {
   return currentPrefillProgress2;
@@ -1251,12 +1305,33 @@ class Sampler {
       }
     }
     const lmStudioBase = await fetchLmStudioStatus();
-    const prefillProgress = getPrefillProgress2() || getPrefillProgress();
-    const generateTokens = getGenerateTokens2() || getGenerateTokens();
+    const logPrefill = getPrefillProgress2();
+    const logGenerate = getGenerateTokens2();
+    const proxyPrefill = getPrefillProgress();
+    const proxyGenerate = getGenerateTokens();
+    const logActive = hasRecentLogActivity(15000);
+    let prefillProgress = lmStudioBase.prefillProgress;
+    if (logActive) {
+      prefillProgress = logPrefill;
+    } else if (logPrefill > 0) {
+      prefillProgress = logPrefill;
+    } else if (proxyPrefill > 0) {
+      prefillProgress = proxyPrefill;
+    }
+    let generateTokens = lmStudioBase.generateTokens;
+    if (logActive && logGenerate > 0) {
+      generateTokens = logGenerate;
+    } else if (logGenerate > 0) {
+      generateTokens = logGenerate;
+    } else if (proxyGenerate > 0) {
+      generateTokens = proxyGenerate;
+    } else if (logActive && logGenerate === 0 && prefillProgress === 0) {
+      generateTokens = 0;
+    }
     const lmStudio = {
       ...lmStudioBase,
       prefillProgress,
-      generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens,
+      generateTokens,
       logStats: getLogStats()
     };
     return {

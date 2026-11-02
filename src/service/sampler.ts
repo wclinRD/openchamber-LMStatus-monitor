@@ -10,7 +10,7 @@ import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tre
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
 import { getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
-import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats } from './lm-studio-log-parser.ts';
+import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats, hasRecentLogActivity } from './lm-studio-log-parser.ts';
 
 export const SAMPLE_INTERVAL_MS = 2_000;
 /** Listening ports change rarely and cost the most to read, so every other sample. */
@@ -209,14 +209,39 @@ export class Sampler {
     }
 
     const lmStudioBase = await fetchLmStudioStatus();
-    // Prefer log parser data for live status, fallback to chat-proxy data
-    const prefillProgress = getPrefillProgressFromLog() || getPrefillProgress();
-    const generateTokens = getGenerateTokensFromLog() || getGenerateTokens();
+    // Prefer log parser data for live status when it's actively updating (e.g. LM Studio GUI)
+    // Avoid falling back to stale chat-proxy values from a previous proxied request
+    const logPrefill = getPrefillProgressFromLog();
+    const logGenerate = getGenerateTokensFromLog();
+    const proxyPrefill = getPrefillProgress();
+    const proxyGenerate = getGenerateTokens();
+    const logActive = hasRecentLogActivity(15000);
+
+    let prefillProgress = lmStudioBase.prefillProgress;
+    if (logActive) {
+      prefillProgress = logPrefill;
+    } else if (logPrefill > 0) {
+      prefillProgress = logPrefill;
+    } else if (proxyPrefill > 0) {
+      prefillProgress = proxyPrefill;
+    }
+
+    let generateTokens = lmStudioBase.generateTokens;
+    if (logActive && logGenerate > 0) {
+      generateTokens = logGenerate;
+    } else if (logGenerate > 0) {
+      generateTokens = logGenerate;
+    } else if (proxyGenerate > 0) {
+      generateTokens = proxyGenerate;
+    } else if (logActive && logGenerate === 0 && prefillProgress === 0) {
+      // Log parser is active but idle/completed, don't reuse stale proxy values
+      generateTokens = 0;
+    }
     
     const lmStudio = {
       ...lmStudioBase,
-      prefillProgress: prefillProgress,
-      generateTokens: generateTokens > 0 ? generateTokens : lmStudioBase.generateTokens,
+      prefillProgress,
+      generateTokens,
       logStats: getLogStats(),
     };
 

@@ -43,6 +43,26 @@ export const PANEL_STYLE = `
   .big { font-size: 22px; font-weight: 600; line-height: 1.1; letter-spacing: -.01em; }
   .card-top .grow { flex: 1; }
   .sub { color: var(--oc-muted); font-size: 11px; }
+  .lm-row { display: flex; align-items: baseline; justify-content: space-between; padding: 2px 0; }
+  .lm-label { color: var(--oc-muted); font-size: 11px; }
+  .lm-state-loaded { color: var(--oc-success); }
+  .lm-state-loading { color: var(--oc-info); }
+  .lm-state-unloaded { color: var(--oc-muted); }
+  .lm-state-error { color: var(--oc-error); }
+  .lm-state-dim { color: color-mix(in srgb, var(--oc-fg) 70%, transparent); }
+  .lm-spec-context { color: var(--oc-muted); font-size: 11px; }
+  .lm-detail { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .lm-model-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
+  .lm-model-info { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .lm-model-name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lm-model-meta { font-size: 10px; color: var(--oc-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lm-model-right { display: flex; gap: 4px; flex: none; }
+  .lm-pill { font-size: 10px; padding: 0 4px; border-radius: 4px; line-height: 14px; }
+  .lm-pill-loaded { background: color-mix(in srgb, var(--oc-success) 16%, transparent); color: var(--oc-success); }
+  .lm-pill-loading { background: color-mix(in srgb, var(--oc-info) 16%, transparent); color: var(--oc-info); }
+  .lm-pill-not-loaded { background: color-mix(in srgb, var(--oc-fg) 8%, transparent); color: var(--oc-muted); }
+  .lm-pill-ctx { background: color-mix(in srgb, var(--oc-fg) 8%, transparent); color: var(--oc-muted); }
+  .lm-more { font-size: 10px; color: var(--oc-muted); }
   /* A track inside a card is the next tone step; segments part by a 1px gap. */
   .stack { display: flex; gap: 1px; height: 8px; border-radius: 4px; overflow: hidden; background: color-mix(in srgb, var(--oc-fg) 8%, transparent); }
   .stack > span { height: 100%; transition: width .4s ease; }

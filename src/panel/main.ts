@@ -9,6 +9,7 @@ import {
   SERVER_ORIGIN,
   formatBytes,
   formatPercent,
+  formatPrefillPercent,
   formatUptime,
   jobDetail,
   platformName,
@@ -67,6 +68,22 @@ const appCard = el('div', 'card', '', [
   appLegend,
 ]);
 
+// ----- LM Studio -----
+
+const lmStateValue = el('span', 'big num lm-state', '—');
+const lmSpecContext = el('div', 'lm-spec-context');
+const lmPrefillValue = el('span', 'sub num');
+const lmGenerateValue = el('span', 'sub num');
+const lmDetail = el('div', 'lm-detail');
+const lmCard = el('div', 'card', '', [
+  el('div', 'card-top', '', [el('span', 'label', 'LM Studio'), el('span', 'grow')]),
+  lmStateValue,
+  el('div', 'lm-row', '', [el('span', 'lm-label', 'Prefill'), lmPrefillValue]),
+  el('div', 'lm-row', '', [el('span', 'lm-label', 'Generate'), lmGenerateValue]),
+  lmSpecContext,
+  lmDetail,
+]);
+
 // Every row is name · action · CPU · memory, so Stop sits centred beside the numbers.
 const columns = (): HTMLElement => el('div', 'cols', '', [el('span'), el('span'), el('span', 'cell', 'CPU'), el('span', 'cell', 'Memory')]);
 const actionCell = (button?: HTMLElement): HTMLElement => el('span', 'action', '', button ? [button] : []);
@@ -96,7 +113,7 @@ outsideSection.hidden = true;
 
 const footnote = el('div', 'footnote', 'Process CPU counts 100% per core, as Activity Monitor does; the CPU card above is the whole machine. Memory is resident memory: pages a process shares with others count in each of them.');
 
-root.append(banner, head, grid, appCard, serversSection, processesSection, outsideSection, footnote);
+root.append(banner, head, grid, appCard, lmCard, serversSection, processesSection, outsideSection, footnote);
 
 // ----- Stop -----
 
@@ -348,6 +365,132 @@ const render = (snapshot: Snapshot): void => {
       el('span', 'value num', formatBytes(group.memory)),
     ]);
   }));
+
+  // LM Studio status
+  const { lmStudio } = snapshot;
+  const currentModel = Array.isArray(lmStudio.models) ? lmStudio.models.find((m) => m.id === lmStudio.modelName) : undefined;
+  const currentDisplay = currentModel?.displayName || lmStudio.modelName;
+  let stateLabel: string;
+  if (lmStudio.modelName) {
+    switch (lmStudio.state) {
+      case 'loaded':
+        stateLabel = currentDisplay;
+        break;
+      case 'loading':
+        stateLabel = `${currentDisplay} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
+        break;
+      case 'unloaded':
+        stateLabel = currentDisplay ? `${currentDisplay} · 卸載` : '卸載';
+        break;
+      case 'error':
+        stateLabel = currentDisplay ? `${currentDisplay} · 錯誤` : '錯誤';
+        break;
+      default:
+        stateLabel = currentDisplay;
+    }
+  } else {
+    switch (lmStudio.state) {
+      case 'loaded':
+        stateLabel = '掛載';
+        break;
+      case 'unloaded':
+        stateLabel = '卸載';
+        break;
+      case 'loading':
+        stateLabel = `載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
+        break;
+      case 'error':
+        stateLabel = '錯誤';
+        break;
+      default:
+        stateLabel = '—';
+    }
+  }
+  lmStateValue.textContent = stateLabel;
+  lmStateValue.className = lmStudio.state === 'loaded' ? 'big num lm-state lm-state-loaded lm-state-dim' : `big num lm-state lm-state-${lmStudio.state}`;
+
+  const specParts: string[] = [];
+  if (currentModel?.paramsString) specParts.push(currentModel.paramsString);
+  if (currentModel?.bitsPerWeight) specParts.push(`${currentModel.bitsPerWeight}bit`);
+  else if (currentModel?.quantization) specParts.push(currentModel.quantization);
+  if (currentModel?.format) specParts.push(currentModel.format.toUpperCase());
+  if (typeof currentModel?.sizeBytes === 'number' && currentModel.sizeBytes > 0) {
+    specParts.push(`${(currentModel.sizeBytes / 1024 / 1024 / 1024).toFixed(1)}GB`);
+  }
+  const ctxLoaded = currentModel?.loadedContextLength;
+  const ctxMax = currentModel?.maxContextLength;
+  let ctxText = '';
+  if (ctxLoaded && ctxMax) {
+    ctxText = `Context: ${Math.round(ctxLoaded / 1024)}K / ${Math.round(ctxMax / 1024)}K`;
+  } else if (ctxMax) {
+    ctxText = `Context: ${Math.round(ctxMax / 1024)}K`;
+  }
+  const parts = [...specParts];
+  if (ctxText) parts.push(ctxText);
+  lmSpecContext.textContent = parts.join(' · ');
+  lmSpecContext.hidden = parts.length === 0;
+
+  const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
+  if (isGenerating) {
+    lmPrefillValue.textContent = formatPrefillPercent(lmStudio.prefillProgress);
+    lmGenerateValue.textContent = lmStudio.generateTokens.toLocaleString();
+  } else {
+    lmPrefillValue.textContent = '—';
+    lmGenerateValue.textContent = '—';
+  }
+
+  lmDetail.replaceChildren();
+  if (Array.isArray(lmStudio.models) && lmStudio.models.length > 0) {
+    const loaded = lmStudio.models.filter((m) => m.state === 'loaded');
+    if (loaded.length > 0) {
+      for (const model of loaded.slice(0, 8)) {
+        const row = el('div', 'lm-model-row');
+        const name = el('div', 'lm-model-name');
+        name.textContent = model.displayName || model.id;
+        const metaParts: string[] = [];
+        if (model.paramsString) metaParts.push(model.paramsString);
+        if (model.quantization) metaParts.push(model.bitsPerWeight ? `${model.bitsPerWeight}bit` : model.quantization);
+        if (model.format) metaParts.push(model.format.toUpperCase());
+        if (model.arch) metaParts.push(model.arch);
+        if (typeof model.sizeBytes === 'number' && model.sizeBytes > 0) {
+          metaParts.push(`${(model.sizeBytes / 1024 / 1024 / 1024).toFixed(1)}GB`);
+        }
+        const caps = model.capabilities;
+        if (Array.isArray(caps)) {
+          if (caps.includes('vision')) metaParts.push('VISION');
+          if (caps.includes('tool_use') || caps.includes('function_calling')) metaParts.push('TOOL');
+          if (caps.includes('reasoning')) metaParts.push('REASON');
+        } else if (caps && typeof caps === 'object') {
+          if ((caps as any).vision) metaParts.push('VISION');
+          if ((caps as any).function_calling || (caps as any).tool_use) metaParts.push('TOOL');
+          if ((caps as any).reasoning) metaParts.push('REASON');
+        }
+        const meta = el('div', 'lm-model-meta');
+        meta.textContent = metaParts.join(' · ');
+        const right = el('div', 'lm-model-right');
+        const state = el('span', `lm-pill lm-pill-${model.state}`);
+        state.textContent = model.state === 'loaded' ? '載入' : model.state === 'loading' ? '載入中' : '未載入';
+        const ctx = el('span', 'lm-pill lm-pill-ctx');
+        const ctxVal = model.loadedContextLength ?? model.maxContextLength;
+        ctx.textContent = ctxVal ? `${Math.round(ctxVal / 1024)}K` : '—';
+        right.append(state, ctx);
+        if (Array.isArray(model.loadedInstances) && model.loadedInstances.length > 1) {
+          const inst = el('span', 'lm-pill lm-pill-ctx');
+          inst.textContent = `x${model.loadedInstances.length}`;
+          right.append(inst);
+        }
+        const info = el('div', 'lm-model-info');
+        info.append(name, meta);
+        row.append(info, right);
+        lmDetail.append(row);
+      }
+      if (loaded.length > 8) {
+        const more = el('div', 'lm-more');
+        more.textContent = `+${loaded.length - 8} 個已載入模型`;
+        lmDetail.append(more);
+      }
+    }
+  }
 
   serversCount.textContent = snapshot.servers.length > 0 ? String(snapshot.servers.length) : '';
   serversList.replaceChildren(...snapshot.servers.map(serverRow));

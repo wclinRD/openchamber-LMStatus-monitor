@@ -28,6 +28,8 @@ let currentPrefillProgress: number = 0;
 let currentGenerateTokens: number = 0;
 let generatedPacketCount: number = 0;
 let logWatcher: ChildProcess | null = null;
+/** Timestamp of last time we updated prefill/generate from logs */
+let lastLogUpdateAt = 0;
 
 /** Log event statistics */
 const logStats: LmLogStats = {
@@ -65,6 +67,21 @@ export function getLogStats(): LmLogStats {
  */
 export function getLogWatcherState(): LogWatcherState {
   return { ...watcherState };
+}
+
+/**
+ * Timestamp of the most recent prefill/generate update from LM Studio logs.
+ */
+export function getLastLogUpdateAt(): number {
+  return lastLogUpdateAt;
+}
+
+/**
+ * Returns true if log parser has seen activity within the given window.
+ */
+export function hasRecentLogActivity(windowMs = 10000): boolean {
+  if (lastLogUpdateAt === 0) return false;
+  return Date.now() - lastLogUpdateAt < windowMs;
 }
 
 /**
@@ -176,6 +193,7 @@ function execFileSync(file: string, args: string[], options: { timeout: number }
 export function updatePrefillProgressFromLog(progress: number): void {
   if (progress < 0 || progress > 100) return;
   currentPrefillProgress = progress;
+  lastLogUpdateAt = Date.now();
 }
 
 /**
@@ -184,6 +202,7 @@ export function updatePrefillProgressFromLog(progress: number): void {
 export function updateGenerateTokensFromLog(tokens: number): void {
   if (tokens < 0) return;
   currentGenerateTokens = Math.max(0, tokens);
+  lastLogUpdateAt = Date.now();
 }
 
 /**
@@ -193,6 +212,7 @@ export function resetLmStudioStats(): void {
   currentPrefillProgress = 0;
   currentGenerateTokens = 0;
   generatedPacketCount = 0;
+  lastLogUpdateAt = Date.now();
 }
 
 /**

@@ -102,6 +102,25 @@ export type Warning =
 
 export type LmModelState = 'loaded' | 'unloaded' | 'loading' | 'error';
 
+export interface LmStudioModelDetail {
+  id: string;
+  state: 'loaded' | 'not-loaded' | 'loading';
+  type?: string;
+  publisher?: string;
+  arch?: string;
+  compatibilityType?: string;
+  quantization?: string;
+  maxContextLength?: number;
+  loadedContextLength?: number;
+  capabilities?: string[] | Record<string, boolean>;
+  displayName?: string;
+  paramsString?: string;
+  sizeBytes?: number;
+  bitsPerWeight?: number;
+  format?: string;
+  loadedInstances?: Array<{ id?: string; config?: { contextLength?: number } }>;
+}
+
 export interface LmStudioStatus {
   /** The currently active/in-use model name, or null when no LLM is being used. */
   modelName: string | null;
@@ -120,6 +139,8 @@ export interface LmStudioStatus {
     prefillProgressEvents: number;
     chatEndEvents: number;
   };
+  /** All models available in LM Studio. */
+  models?: LmStudioModelDetail[];
 }
 
 /** SSE events for live LM Studio status updates. */

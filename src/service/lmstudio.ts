@@ -14,8 +14,20 @@ export type LmModelState = 'loaded' | 'unloaded' | 'loading' | 'error';
 export interface LmModelInfo {
   id: string;
   state: 'loaded' | 'not-loaded' | 'loading';
-  type: string;
+  type?: string;
+  publisher?: string;
+  arch?: string;
+  compatibility_type?: string;
+  quantization?: string | { name?: string; bits_per_weight?: number };
   max_context_length?: number;
+  loaded_context_length?: number;
+  capabilities?: string[] | Record<string, boolean>;
+  display_name?: string;
+  key?: string;
+  params_string?: string;
+  size_bytes?: number;
+  format?: string;
+  loaded_instances?: Array<{ id?: string; config?: { contextLength?: number } }>;
 }
 
 export interface LmStudioStatus {
@@ -23,6 +35,24 @@ export interface LmStudioStatus {
   state: LmModelState;
   prefillProgress: number;
   generateTokens: number;
+  models?: Array<{
+    id: string;
+    state: 'loaded' | 'not-loaded' | 'loading';
+    type?: string;
+    publisher?: string;
+    arch?: string;
+    compatibilityType?: string;
+    quantization?: string;
+    maxContextLength?: number;
+    loadedContextLength?: number;
+    capabilities?: string[] | Record<string, boolean>;
+    displayName?: string;
+    paramsString?: string;
+    sizeBytes?: number;
+    bitsPerWeight?: number;
+    format?: string;
+    loadedInstances?: Array<{ id?: string; config?: { contextLength?: number } }>;
+  }>;
 }
 
 let currentStatus: LmStudioStatus = {
@@ -30,6 +60,7 @@ let currentStatus: LmStudioStatus = {
   state: 'unloaded',
   prefillProgress: 0,
   generateTokens: 0,
+  models: [],
 };
 
 /**
@@ -49,20 +80,65 @@ export function updateFromUsage(usage: { prompt_tokens?: number; completion_toke
  */
 export async function fetchLmStudioStatus(): Promise<LmStudioStatus> {
   try {
-    const response = await fetch(`${LM_STUDIO_URL}/api/v0/models`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+    const [v0Response, v1Response] = await Promise.all([
+      fetch(`${LM_STUDIO_URL}/api/v0/models`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      fetch(`${LM_STUDIO_URL}/api/v1/models`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      }).catch(() => null),
+    ]);
 
-    if (!response.ok) {
+    if (!v0Response.ok) {
       currentStatus.state = 'error';
       return { ...currentStatus };
     }
 
-    const data = await response.json() as { data?: LmModelInfo[] };
+    const data = await v0Response.json() as { data?: LmModelInfo[] };
     const models = data.data ?? [];
+
+    let v1Models: LmModelInfo[] = [];
+    if (v1Response && v1Response.ok) {
+      try {
+        const v1Data = await v1Response.json() as { models?: LmModelInfo[] };
+        v1Models = v1Data.models ?? [];
+      } catch {
+        v1Models = [];
+      }
+    }
+
+    const v1Map = new Map<string, LmModelInfo>();
+    for (const m of v1Models) {
+      const key = m.key ?? m.id;
+      if (key) v1Map.set(key, m);
+    }
+
+    currentStatus.models = models.map((m) => {
+      const v1 = v1Map.get(m.id) ?? v1Map.get(m.key ?? m.id);
+      const quant = typeof m.quantization === 'object' && m.quantization ? m.quantization.name : (typeof m.quantization === 'string' ? m.quantization : undefined);
+      const v1Quant = v1 && typeof v1.quantization === 'object' && v1.quantization ? v1.quantization.name : (typeof v1?.quantization === 'string' ? v1.quantization : undefined);
+      const bits = typeof m.quantization === 'object' && m.quantization ? m.quantization.bits_per_weight : (typeof v1?.quantization === 'object' && v1.quantization ? v1.quantization.bits_per_weight : undefined);
+      return {
+        id: m.id,
+        state: m.state,
+        type: m.type ?? v1?.type,
+        publisher: m.publisher ?? v1?.publisher,
+        arch: m.arch ?? v1?.arch ?? v1?.architecture,
+        compatibilityType: m.compatibility_type ?? v1?.compatibility_type ?? v1?.format,
+        quantization: v1Quant ?? quant,
+        maxContextLength: m.max_context_length ?? v1?.max_context_length,
+        loadedContextLength: m.loaded_context_length ?? v1?.loaded_context_length,
+        capabilities: v1?.capabilities ?? m.capabilities,
+        displayName: v1?.display_name,
+        paramsString: v1?.params_string,
+        sizeBytes: v1?.size_bytes,
+        bitsPerWeight: bits,
+        format: v1?.format ?? m.format,
+        loadedInstances: v1?.loaded_instances ?? (v1 ? (v1 as any).loadedInstances : undefined),
+      };
+    });
 
     // Find the loaded model (state === 'loaded')
     const loadedModel = models.find((m) => m.state === 'loaded');
@@ -86,6 +162,7 @@ export async function fetchLmStudioStatus(): Promise<LmStudioStatus> {
     return { ...currentStatus };
   } catch {
     currentStatus.state = 'error';
+    currentStatus.models = currentStatus.models ?? [];
     return { ...currentStatus };
   }
 }

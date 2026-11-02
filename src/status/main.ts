@@ -117,23 +117,25 @@ const render = (snapshot: Snapshot): void => {
   generateRow.hidden = false;
 
   const { lmStudio } = snapshot;
+  const currentModel = Array.isArray(lmStudio.models) ? lmStudio.models.find((m) => m.id === lmStudio.modelName) : undefined;
+  const currentDisplay = currentModel?.displayName || lmStudio.modelName;
   let stateLabel: string;
   if (lmStudio.modelName) {
     switch (lmStudio.state) {
       case 'loaded':
-        stateLabel = `${lmStudio.modelName} · 掛載`;
+        stateLabel = currentDisplay;
         break;
       case 'loading':
-        stateLabel = `${lmStudio.modelName} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
+        stateLabel = `${currentDisplay} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
         break;
       case 'unloaded':
-        stateLabel = `${lmStudio.modelName} · 卸載`;
+        stateLabel = currentDisplay ? `${currentDisplay} · 卸載` : '卸載';
         break;
       case 'error':
-        stateLabel = `${lmStudio.modelName} · 錯誤`;
+        stateLabel = currentDisplay ? `${currentDisplay} · 錯誤` : '錯誤';
         break;
       default:
-        stateLabel = lmStudio.modelName;
+        stateLabel = currentDisplay;
     }
   } else {
     switch (lmStudio.state) {
