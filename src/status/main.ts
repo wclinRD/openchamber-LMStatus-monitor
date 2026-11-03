@@ -158,7 +158,7 @@ const render = (snapshot: Snapshot): void => {
   const stateValueEl = lmStateRow.querySelector<HTMLElement>('.value')!;
   stateValueEl.textContent = stateLabel;
   // Add state-specific color class
-  stateValueEl.className = `value num lm-state-${lmStudio.state}`;
+  stateValueEl.className = lmStudio.state === 'loaded' ? 'value num lm-state-loaded lm-state-dim' : `value num lm-state-${lmStudio.state}`;
 
   const prefillValue = prefillRow.querySelector<HTMLElement>('.value')!;
   const generateValue = generateRow.querySelector<HTMLElement>('.value')!;
