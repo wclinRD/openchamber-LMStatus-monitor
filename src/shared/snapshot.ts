@@ -118,7 +118,20 @@ export interface LmStudioModelDetail {
   sizeBytes?: number;
   bitsPerWeight?: number;
   format?: string;
-  loadedInstances?: Array<{ id?: string; config?: { contextLength?: number } }>;
+  loadedInstances?: Array<{ id?: string; config?: { contextLength?: number; parallel?: number } }>;
+  parallel?: number;
+}
+
+export interface LmStudioActiveRequest {
+  id: string;
+  model?: string | null;
+  modelDisplayName?: string | null;
+  state: 'prefill' | 'generate' | 'idle';
+  prefillProgress: number;
+  generateTokens: number;
+  tokensPerSecond?: number;
+  prefillTokensPerSecond?: number;
+  startedAt?: number;
 }
 
 export interface LmStudioStatus {
@@ -145,6 +158,12 @@ export interface LmStudioStatus {
   };
   /** All models available in LM Studio. */
   models?: LmStudioModelDetail[];
+  /** Active requests proxied through OpenChamber */
+  requests?: LmStudioActiveRequest[];
+  /** Max parallel requests */
+  parallel?: number;
+  /** Number of active proxied requests */
+  activeRequestCount?: number;
 }
 
 /** SSE events for live LM Studio status updates. */

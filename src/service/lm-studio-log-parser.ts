@@ -30,6 +30,9 @@ let generatedPacketCount: number = 0;
 let logWatcher: ChildProcess | null = null;
 /** Timestamp of last time we updated prefill/generate from logs */
 let lastLogUpdateAt = 0;
+let fileWatcher: NodeJS.Timeout | null = null;
+let lastLogFilePosition = 0;
+let lastLogFilePath: string | null = null;
 let generateStartAt = 0;
 let lastGenerateTokens = 0;
 let lastGenerateAt = 0;
@@ -262,6 +265,10 @@ export function getGenerateTokens(): number {
  * Gets tokens per second from log parser.
  */
 export function getTokensPerSecondFromLog(): number {
+  const g = global as any;
+  if (g.__lmGenTps && g.__lmGenTps > 0) {
+    return g.__lmGenTps;
+  }
   return tokensPerSecond;
 }
 
@@ -269,6 +276,10 @@ export function getTokensPerSecondFromLog(): number {
  * Gets prefill tokens per second from log parser.
  */
 export function getPrefillTokensPerSecondFromLog(): number {
+  const g = global as any;
+  if (g.__lmPrefillTps && g.__lmPrefillTps > 0) {
+    return g.__lmPrefillTps;
+  }
   return prefillTokensPerSecond;
 }
 
@@ -533,6 +544,25 @@ export function parseLogLine(line: string): LmLogEntry | null {
     // Count generated packets in real-time
     generatedPacketCount++;
     currentGenerateTokens = generatedPacketCount;
+    lastLogUpdateAt = Date.now();
+    const now = Date.now();
+    if ((global as any).__lmGenStartAt === undefined) {
+      (global as any).__lmGenStartAt = now;
+      (global as any).__lmLastGenTokens = 0;
+      (global as any).__lmLastGenAt = now;
+      (global as any).__lmGenTps = 0;
+    }
+    if ((global as any).__lmLastGenAt > 0) {
+      const deltaTime = (now - (global as any).__lmLastGenAt) / 1000;
+      const deltaTokens = currentGenerateTokens - (global as any).__lmLastGenTokens;
+      if (deltaTime > 0 && deltaTokens > 0) {
+        const instant = deltaTokens / deltaTime;
+        const cur = (global as any).__lmGenTps || 0;
+        (global as any).__lmGenTps = cur === 0 ? instant : cur * 0.7 + instant * 0.3;
+      }
+    }
+    (global as any).__lmLastGenTokens = currentGenerateTokens;
+    (global as any).__lmLastGenAt = now;
     console.log(`[LM Log Parser] Generated packet count: ${generatedPacketCount}`);
     
     return {
@@ -551,18 +581,11 @@ export function parseLogLine(line: string): LmLogEntry | null {
  * Falls back to file-based watching if CLI is not available.
  */
 export function startLogWatcher(): void {
-  if (logWatcher) return;
+  if (logWatcher || fileWatcher) return;
 
-  const lmsCli = findLmsCli();
-  if (lmsCli) {
-    setWatcherState({ method: 'cli', latestLogFile: null, isWatching: true });
-    console.log('[LM Log Watcher] Starting CLI log watcher using:', lmsCli);
-    startCliLogWatcher(lmsCli);
-  } else {
-    console.log('[LM Log Watcher] LM Studio CLI not found, falling back to file-based log parsing');
-    setWatcherState({ method: 'file', latestLogFile: null, isWatching: true });
-    startFileLogWatcher();
-  }
+  setWatcherState({ method: 'file', latestLogFile: null, isWatching: true });
+  console.log('[LM Log Watcher] Starting file-based log watcher for real-time updates');
+  startFileLogWatcher();
 }
 
 /**
@@ -781,11 +804,21 @@ function getLatestLogFile(logDir: string): string | null {
     const now = new Date();
     const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const dir = path.join(logDir, yearMonth);
-    const files = fs.readdirSync(dir).filter((f): f is string => typeof f === 'string' && f.endsWith('.log')).sort().reverse();
-    if (files.length === 0) return null;
-    const latestFile = files[0];
-    if (!latestFile) return null;
-    return path.join(dir, latestFile);
+    const entries = fs.readdirSync(dir)
+      .filter((f): f is string => typeof f === 'string' && f.endsWith('.log'))
+      .map((f) => {
+        const fullPath = path.join(dir, f);
+        try {
+          const stat = fs.statSync(fullPath);
+          return { path: fullPath, mtimeMs: stat.mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter((f): f is { path: string; mtimeMs: number } => f !== null);
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return entries[0].path;
   } catch {
     return null;
   }

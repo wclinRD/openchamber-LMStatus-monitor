@@ -75,11 +75,14 @@ const lmSpecContext = el('div', 'lm-spec-context');
 const lmPrefillValue = el('span', 'sub num');
 const lmGenerateValue = el('span', 'sub num');
 const lmDetail = el('div', 'lm-detail');
+const lmSlots = el('span', 'muted');
+const lmReqs = el('div', 'lm-reqs');
 const lmCard = el('div', 'card', '', [
-  el('div', 'card-top', '', [el('span', 'label', 'LM Studio'), el('span', 'grow')]),
+  el('div', 'card-top', '', [el('span', 'label', 'LM Studio'), lmSlots, el('span', 'grow')]),
   lmStateValue,
   el('div', 'lm-row', '', [el('span', 'lm-label', 'Prefill'), lmPrefillValue]),
   el('div', 'lm-row', '', [el('span', 'lm-label', 'Generate'), lmGenerateValue]),
+  lmReqs,
   lmSpecContext,
   lmDetail,
 ]);
@@ -432,7 +435,7 @@ const render = (snapshot: Snapshot): void => {
 
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
   if (isGenerating) {
-    const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
+    const prefillDisplay = 100;
     const ppTps = lmStudio.prefillTokensPerSecond;
     if (ppTps && ppTps > 0) {
       lmPrefillValue.textContent = `${formatPrefillPercent(prefillDisplay)} · ${ppTps.toFixed(1)} tok/s`;
@@ -460,6 +463,46 @@ const render = (snapshot: Snapshot): void => {
     lmPrefillValue.textContent = '—';
     lmGenerateValue.textContent = '—';
   }
+
+  if (lmStudio.parallel) {
+    lmSlots.textContent = `${lmStudio.activeRequestCount ?? 0}/${lmStudio.parallel} slots`;
+  } else if (lmStudio.activeRequestCount && lmStudio.activeRequestCount > 0) {
+    lmSlots.textContent = `${lmStudio.activeRequestCount} active`;
+  } else {
+    lmSlots.textContent = '';
+  }
+
+  lmReqs.replaceChildren();
+  const reqs = Array.isArray(lmStudio.requests) ? lmStudio.requests : [];
+  for (const r of reqs.slice(0, 4)) {
+    const row = el('div', 'lm-req-row');
+    const name = el('div', 'lm-req-name');
+    name.textContent = r.modelDisplayName || r.model || '—';
+    const st = el('div', 'lm-req-state');
+    if (r.state === 'generate') {
+      const tps = r.tokensPerSecond;
+      if (tps && tps > 0) {
+        const tokens = r.generateTokens > 0 ? `${r.generateTokens.toLocaleString()} tokens · ` : '';
+        st.textContent = `${tokens}${tps.toFixed(1)} tok/s`;
+      } else if (r.generateTokens > 0) {
+        st.textContent = `${r.generateTokens.toLocaleString()} tokens`;
+      } else {
+        st.textContent = 'Generate';
+      }
+    } else if (r.state === 'prefill') {
+      const ppTps = r.prefillTokensPerSecond;
+      if (ppTps && ppTps > 0) {
+        st.textContent = `Prefill ${r.prefillProgress}% · ${ppTps.toFixed(1)} tok/s`;
+      } else {
+        st.textContent = `Prefill ${r.prefillProgress}%`;
+      }
+    } else {
+      st.textContent = '—';
+    }
+    row.append(name, st);
+    lmReqs.append(row);
+  }
+  lmReqs.hidden = reqs.length === 0;
 
   lmDetail.replaceChildren();
   if (Array.isArray(lmStudio.models) && lmStudio.models.length > 0) {

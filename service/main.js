@@ -1,3 +1,148 @@
+var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
+var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
+
+// src/service/lmstudio.ts
+var exports_lmstudio = {};
+__export(exports_lmstudio, {
+  fetchLmStudioStatus: () => fetchLmStudioStatus,
+  formatGenerateTokens: () => formatGenerateTokens,
+  formatPrefillProgress: () => formatPrefillProgress,
+  stateLabel: () => stateLabel,
+  updateFromUsage: () => updateFromUsage
+});
+function updateFromUsage(usage) {
+  if (!usage)
+    return;
+  currentStatus.generateTokens = Math.max(0, usage.completion_tokens ?? 0);
+}
+async function fetchLmStudioStatus() {
+  try {
+    const [v0Response, v1Response] = await Promise.all([
+      fetch(`${LM_STUDIO_URL}/api/v0/models`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
+      }),
+      fetch(`${LM_STUDIO_URL}/api/v1/models`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" }
+      }).catch(() => null)
+    ]);
+    if (!v0Response.ok) {
+      currentStatus.state = "error";
+      return { ...currentStatus };
+    }
+    const data = await v0Response.json();
+    const models = data.data ?? [];
+    let v1Models = [];
+    if (v1Response && v1Response.ok) {
+      try {
+        const v1Data = await v1Response.json();
+        v1Models = v1Data.models ?? [];
+      } catch {
+        v1Models = [];
+      }
+    }
+    const v1Map = new Map;
+    for (const m of v1Models) {
+      const key = m.key ?? m.id;
+      if (key)
+        v1Map.set(key, m);
+    }
+    currentStatus.models = models.map((m) => {
+      const v1 = v1Map.get(m.id) ?? v1Map.get(m.key ?? m.id);
+      const quant = typeof m.quantization === "object" && m.quantization ? m.quantization.name : typeof m.quantization === "string" ? m.quantization : undefined;
+      const v1Quant = v1 && typeof v1.quantization === "object" && v1.quantization ? v1.quantization.name : typeof v1?.quantization === "string" ? v1.quantization : undefined;
+      const bits = typeof m.quantization === "object" && m.quantization ? m.quantization.bits_per_weight : typeof v1?.quantization === "object" && v1.quantization ? v1.quantization.bits_per_weight : undefined;
+      return {
+        id: m.id,
+        state: m.state,
+        type: m.type ?? v1?.type,
+        publisher: m.publisher ?? v1?.publisher,
+        arch: m.arch ?? v1?.arch ?? v1?.architecture,
+        compatibilityType: m.compatibility_type ?? v1?.compatibility_type ?? v1?.format,
+        quantization: v1Quant ?? quant,
+        maxContextLength: m.max_context_length ?? v1?.max_context_length,
+        loadedContextLength: m.loaded_context_length ?? v1?.loaded_context_length,
+        capabilities: v1?.capabilities ?? m.capabilities,
+        displayName: v1?.display_name,
+        paramsString: v1?.params_string,
+        sizeBytes: v1?.size_bytes,
+        bitsPerWeight: bits,
+        format: v1?.format ?? m.format,
+        loadedInstances: v1?.loaded_instances ?? (v1 ? v1.loadedInstances : undefined),
+        parallel: v1?.loaded_instances?.[0]?.config?.parallel ?? v1?.loaded_instances?.[0]?.config?.parallel
+      };
+    });
+    const loadedModel = models.find((m) => m.state === "loaded");
+    if (loadedModel) {
+      currentStatus.modelName = loadedModel.id;
+      currentStatus.state = "loaded";
+    } else {
+      const loadingModel = models.find((m) => m.state === "loading");
+      if (loadingModel) {
+        currentStatus.modelName = loadingModel.id;
+        currentStatus.state = "loading";
+      } else {
+        const notLoaded = models.find((m) => m.state === "not-loaded");
+        currentStatus.modelName = notLoaded?.id ?? null;
+        currentStatus.state = "unloaded";
+      }
+    }
+    return { ...currentStatus };
+  } catch {
+    currentStatus.state = "error";
+    currentStatus.models = currentStatus.models ?? [];
+    return { ...currentStatus };
+  }
+}
+function stateLabel(state) {
+  switch (state) {
+    case "loaded":
+      return "掛載";
+    case "unloaded":
+      return "卸載";
+    case "loading":
+      return "載入中";
+    case "error":
+      return "錯誤";
+    default:
+      return "未知";
+  }
+}
+function formatPrefillProgress(progress) {
+  return `${progress}%`;
+}
+function formatGenerateTokens(tokens) {
+  if (tokens === 0)
+    return "0";
+  return tokens.toLocaleString();
+}
+var LM_STUDIO_HOST = "127.0.0.1", LM_STUDIO_PORT = 1234, LM_STUDIO_URL, LM_STUDIO_V1_URL, currentStatus;
+var init_lmstudio = __esm(() => {
+  LM_STUDIO_URL = `http://${LM_STUDIO_HOST}:${LM_STUDIO_PORT}`;
+  LM_STUDIO_V1_URL = `${LM_STUDIO_URL}/api/v1/chat`;
+  currentStatus = {
+    modelName: null,
+    state: "unloaded",
+    prefillProgress: 0,
+    generateTokens: 0,
+    models: []
+  };
+});
+
 // src/service/main.ts
 import http from "node:http";
 
@@ -328,97 +473,11 @@ var planStop = (members, commands, target) => {
 // src/shared/snapshot.ts
 var HISTORY_POINTS = 90;
 
-// src/service/lmstudio.ts
-var LM_STUDIO_HOST = "127.0.0.1";
-var LM_STUDIO_PORT = 1234;
-var LM_STUDIO_URL = `http://${LM_STUDIO_HOST}:${LM_STUDIO_PORT}`;
-var LM_STUDIO_V1_URL = `${LM_STUDIO_URL}/api/v1/chat`;
-var currentStatus = {
-  modelName: null,
-  state: "unloaded",
-  prefillProgress: 0,
-  generateTokens: 0,
-  models: []
-};
-async function fetchLmStudioStatus() {
-  try {
-    const [v0Response, v1Response] = await Promise.all([
-      fetch(`${LM_STUDIO_URL}/api/v0/models`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json" }
-      }),
-      fetch(`${LM_STUDIO_URL}/api/v1/models`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json" }
-      }).catch(() => null)
-    ]);
-    if (!v0Response.ok) {
-      currentStatus.state = "error";
-      return { ...currentStatus };
-    }
-    const data = await v0Response.json();
-    const models = data.data ?? [];
-    let v1Models = [];
-    if (v1Response && v1Response.ok) {
-      try {
-        const v1Data = await v1Response.json();
-        v1Models = v1Data.models ?? [];
-      } catch {
-        v1Models = [];
-      }
-    }
-    const v1Map = new Map;
-    for (const m of v1Models) {
-      const key = m.key ?? m.id;
-      if (key)
-        v1Map.set(key, m);
-    }
-    currentStatus.models = models.map((m) => {
-      const v1 = v1Map.get(m.id) ?? v1Map.get(m.key ?? m.id);
-      const quant = typeof m.quantization === "object" && m.quantization ? m.quantization.name : typeof m.quantization === "string" ? m.quantization : undefined;
-      const v1Quant = v1 && typeof v1.quantization === "object" && v1.quantization ? v1.quantization.name : typeof v1?.quantization === "string" ? v1.quantization : undefined;
-      const bits = typeof m.quantization === "object" && m.quantization ? m.quantization.bits_per_weight : typeof v1?.quantization === "object" && v1.quantization ? v1.quantization.bits_per_weight : undefined;
-      return {
-        id: m.id,
-        state: m.state,
-        type: m.type ?? v1?.type,
-        publisher: m.publisher ?? v1?.publisher,
-        arch: m.arch ?? v1?.arch ?? v1?.architecture,
-        compatibilityType: m.compatibility_type ?? v1?.compatibility_type ?? v1?.format,
-        quantization: v1Quant ?? quant,
-        maxContextLength: m.max_context_length ?? v1?.max_context_length,
-        loadedContextLength: m.loaded_context_length ?? v1?.loaded_context_length,
-        capabilities: v1?.capabilities ?? m.capabilities,
-        displayName: v1?.display_name,
-        paramsString: v1?.params_string,
-        sizeBytes: v1?.size_bytes,
-        bitsPerWeight: bits,
-        format: v1?.format ?? m.format,
-        loadedInstances: v1?.loaded_instances ?? (v1 ? v1.loadedInstances : undefined)
-      };
-    });
-    const loadedModel = models.find((m) => m.state === "loaded");
-    if (loadedModel) {
-      currentStatus.modelName = loadedModel.id;
-      currentStatus.state = "loaded";
-    } else {
-      const loadingModel = models.find((m) => m.state === "loading");
-      if (loadingModel) {
-        currentStatus.modelName = loadingModel.id;
-        currentStatus.state = "loading";
-      } else {
-        const notLoaded = models.find((m) => m.state === "not-loaded");
-        currentStatus.modelName = notLoaded?.id ?? null;
-        currentStatus.state = "unloaded";
-      }
-    }
-    return { ...currentStatus };
-  } catch {
-    currentStatus.state = "error";
-    currentStatus.models = currentStatus.models ?? [];
-    return { ...currentStatus };
-  }
-}
+// src/service/sampler.ts
+init_lmstudio();
+
+// src/service/chat-proxy.ts
+import { randomUUID } from "node:crypto";
 
 // src/service/lm-studio-events.ts
 var lmStudioSseClients = new Set;
@@ -447,6 +506,27 @@ var generateStartAt = 0;
 var lastGenerateTokens = 0;
 var lastGenerateAt = 0;
 var tokensPerSecond = 0;
+var activeRequests = new Map;
+function getActiveRequests() {
+  const arr = [];
+  for (const req of activeRequests.values()) {
+    arr.push({
+      id: req.id,
+      model: req.model,
+      modelDisplayName: req.modelDisplayName,
+      state: req.state,
+      prefillProgress: req.prefillProgress,
+      generateTokens: req.generateTokens,
+      tokensPerSecond: req.tokensPerSecond > 0 ? req.tokensPerSecond : undefined,
+      prefillTokensPerSecond: req.prefillTokensPerSecond > 0 ? req.prefillTokensPerSecond : undefined,
+      startedAt: req.startedAt
+    });
+  }
+  return arr;
+}
+function getActiveRequestCount() {
+  return activeRequests.size;
+}
 async function isLmStudioModel(modelId) {
   try {
     const response = await fetch(`http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v0/models`, {
@@ -476,6 +556,7 @@ function updateGenerateTokens(totalOutputTokens) {
   currentGenerateTokens = Math.max(0, totalOutputTokens);
 }
 async function proxyChatRequest(req, res, body) {
+  const reqId = randomUUID();
   let chatRequest;
   try {
     chatRequest = JSON.parse(body);
@@ -489,6 +570,15 @@ async function proxyChatRequest(req, res, body) {
     res.end(JSON.stringify({ error: "invalid-request" }));
     return;
   }
+  const lmStatusForModel = await (async () => {
+    try {
+      const { fetchLmStudioStatus: fetchLmStudioStatus2 } = await Promise.resolve().then(() => (init_lmstudio(), exports_lmstudio));
+      const s = await fetchLmStudioStatus2();
+      return s;
+    } catch {
+      return null;
+    }
+  })();
   const isLmStudio = await isLmStudioModel(chatRequest.model);
   if (!isLmStudio) {
     res.writeHead(400, { "Content-Type": "application/json" });
@@ -498,6 +588,21 @@ async function proxyChatRequest(req, res, body) {
     }));
     return;
   }
+  const now = Date.now();
+  activeRequests.set(reqId, {
+    id: reqId,
+    model: chatRequest.model,
+    modelDisplayName: lmStatusForModel?.models?.find((m) => m.id === chatRequest.model)?.displayName || chatRequest.model,
+    state: "prefill",
+    prefillProgress: 0,
+    generateTokens: 0,
+    tokensPerSecond: 0,
+    prefillTokensPerSecond: 0,
+    startedAt: now,
+    lastGenAt: now,
+    lastGenTokens: 0,
+    genStartAt: now
+  });
   let lmStudioBody = {
     model: chatRequest.model,
     stream: true
@@ -576,6 +681,16 @@ async function proxyChatRequest(req, res, body) {
               lastGenerateTokens = 0;
               lastGenerateAt = generateStartAt;
               tokensPerSecond = 0;
+              const ar = activeRequests.get(reqId);
+              if (ar) {
+                ar.state = "prefill";
+                ar.prefillProgress = 0;
+                ar.generateTokens = 0;
+                ar.genStartAt = Date.now();
+                ar.lastGenAt = Date.now();
+                ar.lastGenTokens = 0;
+                ar.tokensPerSecond = 0;
+              }
               console.log("[LM Stat Log] chat_start: generation started");
               pushLmStudioEvent({ type: "chat-start", prefillProgress: 0, generateTokens: 0 });
             } else if (eventType === "prompt_processing.start" && data) {
@@ -585,15 +700,21 @@ async function proxyChatRequest(req, res, body) {
                 const parsed = JSON.parse(data);
                 if (typeof parsed.progress === "number") {
                   updatePrefillProgress(parsed.progress);
-                  console.log(`[LM Stat Log] prefill_progress: ${Math.round(parsed.progress * 100)}%`);
-                  pushLmStudioEvent({ type: "prefill-progress", prefillProgress: Math.round(parsed.progress * 100) });
+                  const pp = Math.round(parsed.progress * 100);
+                  const ar = activeRequests.get(reqId);
+                  if (ar) {
+                    ar.state = "prefill";
+                    ar.prefillProgress = pp;
+                  }
+                  console.log(`[LM Stat Log] prefill_progress: ${pp}%`);
+                  pushLmStudioEvent({ type: "prefill-progress", prefillProgress: pp });
                 }
               } catch {}
             } else if (eventType === "message.delta" && data) {
               currentGenerateTokens += 1;
-              const now = Date.now();
+              const now2 = Date.now();
               if (lastGenerateAt > 0) {
-                const deltaTime = (now - lastGenerateAt) / 1000;
+                const deltaTime = (now2 - lastGenerateAt) / 1000;
                 const deltaTokens = currentGenerateTokens - lastGenerateTokens;
                 if (deltaTime > 0 && deltaTokens > 0) {
                   const instant = deltaTokens / deltaTime;
@@ -601,7 +722,23 @@ async function proxyChatRequest(req, res, body) {
                 }
               }
               lastGenerateTokens = currentGenerateTokens;
-              lastGenerateAt = now;
+              lastGenerateAt = now2;
+              const ar = activeRequests.get(reqId);
+              if (ar) {
+                ar.state = "generate";
+                ar.prefillProgress = 100;
+                ar.generateTokens = currentGenerateTokens;
+                if (ar.lastGenAt > 0) {
+                  const deltaTime = (now2 - ar.lastGenAt) / 1000;
+                  const deltaTokens = ar.generateTokens - ar.lastGenTokens;
+                  if (deltaTime > 0 && deltaTokens > 0) {
+                    const instant = deltaTokens / deltaTime;
+                    ar.tokensPerSecond = ar.tokensPerSecond === 0 ? instant : ar.tokensPerSecond * 0.7 + instant * 0.3;
+                  }
+                }
+                ar.lastGenTokens = ar.generateTokens;
+                ar.lastGenAt = now2;
+              }
               try {
                 const parsed = JSON.parse(data);
                 if (parsed.content) {
@@ -633,6 +770,18 @@ async function proxyChatRequest(req, res, body) {
                       tokensPerSecond = currentGenerateTokens / elapsed;
                     }
                   }
+                  const ar = activeRequests.get(reqId);
+                  if (ar) {
+                    ar.state = "generate";
+                    ar.prefillProgress = 100;
+                    ar.generateTokens = currentGenerateTokens;
+                    if (ar.genStartAt > 0) {
+                      const elapsed = (Date.now() - ar.genStartAt) / 1000;
+                      if (elapsed > 0) {
+                        ar.tokensPerSecond = ar.generateTokens / elapsed;
+                      }
+                    }
+                  }
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=${parsed.result.stats.total_output_tokens}`);
                   pushLmStudioEvent({ type: "chat-end", generateTokens: currentGenerateTokens });
                 } else {
@@ -641,6 +790,16 @@ async function proxyChatRequest(req, res, body) {
                     if (elapsed > 0) {
                       tokensPerSecond = currentGenerateTokens / elapsed;
                     }
+                  }
+                  const ar = activeRequests.get(reqId);
+                  if (ar && ar.genStartAt > 0 && currentGenerateTokens > 0) {
+                    const elapsed = (Date.now() - ar.genStartAt) / 1000;
+                    if (elapsed > 0) {
+                      ar.tokensPerSecond = currentGenerateTokens / elapsed;
+                    }
+                    ar.generateTokens = currentGenerateTokens;
+                    ar.prefillProgress = 100;
+                    ar.state = "generate";
                   }
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
                   pushLmStudioEvent({ type: "chat-end", generateTokens: currentGenerateTokens });
@@ -651,12 +810,27 @@ async function proxyChatRequest(req, res, body) {
                 res.write(`data: [DONE]
 
 `);
-              } catch {}
+                setTimeout(() => {
+                  activeRequests.delete(reqId);
+                }, 2000);
+              } catch {
+                activeRequests.delete(reqId);
+              }
             } else if (eventType === "prompt_processing.end") {
               currentPrefillProgress = 0;
+              const ar = activeRequests.get(reqId);
+              if (ar) {
+                ar.prefillProgress = 100;
+                ar.state = "generate";
+              }
               console.log("[LM Stat Log] prompt_processing_end: prefill completed");
             } else if (eventType === "chat.end") {
               currentPrefillProgress = 0;
+              const ar = activeRequests.get(reqId);
+              if (ar) {
+                ar.prefillProgress = 100;
+                ar.state = "generate";
+              }
             }
           }
         }
@@ -669,6 +843,7 @@ async function proxyChatRequest(req, res, body) {
     processEvents();
   } catch (error) {
     console.error("[Chat Proxy] Error:", error);
+    activeRequests.delete(reqId);
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "proxy-failed" }));
   }
@@ -684,7 +859,6 @@ function getTokensPerSecond() {
 }
 
 // src/service/lm-studio-log-parser.ts
-import { execFile as execFile2, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 var currentPrefillProgress2 = 0;
@@ -692,6 +866,7 @@ var currentGenerateTokens2 = 0;
 var generatedPacketCount = 0;
 var logWatcher = null;
 var lastLogUpdateAt = 0;
+var fileWatcher = null;
 var generateStartAt2 = 0;
 var lastGenerateTokens2 = 0;
 var lastGenerateAt2 = 0;
@@ -724,91 +899,11 @@ function hasRecentLogActivity(windowMs = 1e4) {
 function setWatcherState(state) {
   watcherState = { ...watcherState, ...state };
 }
-function recordLogEvent(level, type) {
-  logStats.totalEvents++;
-  if (level) {
-    logStats.byLevel[level] = (logStats.byLevel[level] || 0) + 1;
-  }
-  logStats.byType[type] = (logStats.byType[type] || 0) + 1;
-  if (type === "prefill-progress") {
-    logStats.prefillProgressEvents++;
-  } else if (type === "chat-end") {
-    logStats.chatEndEvents++;
-  }
-}
-function hasSensitiveMarkers(message) {
-  return message.includes("[Sensitive]") || message.includes("REDACTED") || message.includes("PII") || message.toLowerCase().includes("sensitive");
-}
-function findLmsCli() {
-  const home = process.env.HOME ?? "/Users/wclin";
-  const candidates = [
-    path.join(home, ".cache", "lm-studio", "bin", "lms"),
-    path.join(home, ".lmstudio", "bin", "lms")
-  ];
-  for (const candidate of candidates) {
-    try {
-      fs.accessSync(candidate, fs.constants.F_OK | fs.constants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  try {
-    const whichResult = execFileSync("which", ["lms"], { timeout: 3000 });
-    const lmsPath = whichResult.trim();
-    if (lmsPath) {
-      fs.accessSync(lmsPath, fs.constants.F_OK | fs.constants.X_OK);
-      return lmsPath;
-    }
-  } catch {}
-  return null;
-}
-function execFileSync(file, args, options) {
-  return new Promise((resolve, reject) => {
-    execFile2(file, args, { timeout: options.timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => {
-      if (error && error.code === "ENOENT") {
-        reject(new Error(`Command not found: ${file}`));
-      } else if (error) {
-        if (stdout)
-          resolve(stdout);
-        else
-          reject(error);
-      } else {
-        resolve(stdout);
-      }
-    });
-  }).catch((err) => {
-    throw err;
-  });
-}
 function updatePrefillProgressFromLog(progress) {
   if (progress < 0 || progress > 100)
     return;
   currentPrefillProgress2 = progress;
   lastLogUpdateAt = Date.now();
-}
-function updateGenerateTokensFromLog(tokens) {
-  if (tokens < 0)
-    return;
-  const now = Date.now();
-  if (generateStartAt2 === 0 && tokens > 0) {
-    generateStartAt2 = now;
-    lastGenerateTokens2 = 0;
-    lastGenerateAt2 = now;
-    tokensPerSecond2 = 0;
-  }
-  if (tokens > currentGenerateTokens2) {
-    if (lastGenerateAt2 > 0) {
-      const deltaTime = (now - lastGenerateAt2) / 1000;
-      const deltaTokens = tokens - lastGenerateTokens2;
-      if (deltaTime > 0 && deltaTokens > 0) {
-        const instant = deltaTokens / deltaTime;
-        tokensPerSecond2 = tokensPerSecond2 === 0 ? instant : tokensPerSecond2 * 0.7 + instant * 0.3;
-      }
-    }
-    lastGenerateTokens2 = tokens;
-    lastGenerateAt2 = now;
-  }
-  currentGenerateTokens2 = Math.max(0, tokens);
-  lastLogUpdateAt = now;
 }
 function resetLmStudioStats() {
   currentPrefillProgress2 = 0;
@@ -828,157 +923,18 @@ function getGenerateTokens2() {
   return currentGenerateTokens2;
 }
 function getTokensPerSecondFromLog() {
+  const g = global;
+  if (g.__lmGenTps && g.__lmGenTps > 0) {
+    return g.__lmGenTps;
+  }
   return tokensPerSecond2;
 }
 function getPrefillTokensPerSecondFromLog() {
-  return prefillTokensPerSecond;
-}
-function parseJsonLogLine(line) {
-  try {
-    const parsed = JSON.parse(line);
-    const data = typeof parsed.data === "object" && parsed.data !== null ? parsed.data : null;
-    const level = typeof parsed.level === "string" ? parsed.level.toLowerCase() : typeof data?.level === "string" ? data.level.toLowerCase() : null;
-    const content = typeof parsed.message === "string" ? parsed.message : typeof data?.content === "string" ? data.content : typeof parsed.content === "string" ? parsed.content : "";
-    const structuredType = typeof parsed.type === "string" ? parsed.type : typeof data?.type === "string" ? data.type : "";
-    let eventType = "server-event";
-    if (structuredType === "llm.prediction.output") {
-      eventType = "model-output";
-    } else if (structuredType === "llm.prediction.input") {
-      eventType = "model-input";
-    } else {
-      const prefillMatch = content.match(/Prompt processing progress:\s*([\d.]+)%/);
-      if (prefillMatch?.[1]) {
-        const progress = parseFloat(prefillMatch[1]);
-        if (!isNaN(progress) && progress >= 0 && progress <= 100) {
-          eventType = "prefill-progress";
-          if (currentGenerateTokens2 > 0 || generatedPacketCount > 0) {
-            currentGenerateTokens2 = 0;
-            generatedPacketCount = 0;
-            console.log("[LM Log Parser] Switched back to prefill phase, cleared generate counter");
-          }
-        }
-      }
-      const prefillTpsMatch = content.match(/(?:prompt|prefill).*?([\d.]+)\s*tokens?\/s/i) || content.match(/([\d.]+)\s*tokens?\/s.*?(?:prompt|prefill)/i) || content.match(/Prompt eval rate.*?([\d.]+)/i);
-      if (prefillTpsMatch?.[1]) {
-        const tps = parseFloat(prefillTpsMatch[1]);
-        if (!isNaN(tps) && tps > 0) {
-          prefillTokensPerSecond = tps;
-        }
-      } else if (content.includes("Prompt processing complete")) {
-        prefillTokensPerSecond = 0;
-      } else if (content.match(/Processed .* tokens in .* seconds/i)) {
-        const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
-        const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
-        if (tokensMatch?.[1] && timeMatch?.[1]) {
-          const tokens = parseFloat(tokensMatch[1]);
-          const seconds = parseFloat(timeMatch[1]);
-          if (tokens > 0 && seconds > 0) {
-            prefillTokensPerSecond = tokens / seconds;
-          }
-        }
-      } else if (content.match(/Prompt processing.*completed/i) || content.includes("chat completion") || content.includes("generation complete") || content.includes("Prompt processing complete") || content.includes("Finished streaming response")) {
-        eventType = "chat-end";
-      } else if (content.includes("Generated packet") || content.includes("llm.prediction.output")) {
-        eventType = "model-output";
-      } else if (level === "info" || level === "warning" || level === "error" || level === "debug") {
-        eventType = "server-event";
-      }
-    }
-    recordLogEvent(level, eventType);
-    if (hasSensitiveMarkers(content)) {
-      logStats.sensitiveMarkers++;
-    }
-    const model = typeof parsed.modelIdentifier === "string" ? parsed.modelIdentifier : typeof parsed.identifier === "string" ? parsed.identifier : typeof parsed.model === "string" ? parsed.model : typeof data?.modelIdentifier === "string" ? data.modelIdentifier : "unknown";
-    if (eventType === "model-output") {
-      if (currentPrefillProgress2 > 0) {
-        currentPrefillProgress2 = 0;
-        console.log("[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress");
-      }
-      const stats = typeof parsed.stats === "object" && parsed.stats !== null ? parsed.stats : null;
-      let outputTokens = null;
-      if (typeof parsed.tokens === "number") {
-        outputTokens = parsed.tokens;
-      } else if (typeof parsed.outputTokens === "number") {
-        outputTokens = parsed.outputTokens;
-      } else if (typeof parsed.total_output_tokens === "number") {
-        outputTokens = parsed.total_output_tokens;
-      } else if (typeof parsed.generated_tokens === "number") {
-        outputTokens = parsed.generated_tokens;
-      } else if (stats) {
-        if (typeof stats.outputTokens === "number") {
-          outputTokens = stats.outputTokens;
-        } else if (typeof stats.total_output_tokens === "number") {
-          outputTokens = stats.total_output_tokens;
-        } else if (typeof stats.generatedTokens === "number") {
-          outputTokens = stats.generatedTokens;
-        } else if (typeof stats.tokens === "number") {
-          outputTokens = stats.tokens;
-        }
-      }
-      if (outputTokens !== null && outputTokens >= 0) {
-        updateGenerateTokensFromLog(outputTokens);
-        return {
-          timestamp: new Date,
-          model,
-          type: "model-output",
-          outputTokens
-        };
-      }
-      if (content.includes("Generated packet")) {
-        generatedPacketCount++;
-        updateGenerateTokensFromLog(generatedPacketCount);
-        return {
-          timestamp: new Date,
-          model,
-          type: "model-output",
-          outputTokens: generatedPacketCount
-        };
-      }
-      return {
-        timestamp: new Date,
-        model,
-        type: "model-output"
-      };
-    }
-    if (eventType === "prefill-progress") {
-      const prefillMatch = content.match(/Prompt processing progress:\s*([\d.]+)%/);
-      if (prefillMatch?.[1]) {
-        const progress = parseFloat(prefillMatch[1]);
-        updatePrefillProgressFromLog(progress);
-        return {
-          timestamp: new Date,
-          model,
-          type: "prefill-progress",
-          progress
-        };
-      }
-    }
-    if (eventType === "chat-end") {
-      resetLmStudioStats();
-      return {
-        timestamp: new Date,
-        model,
-        type: "chat-end"
-      };
-    }
-    if (eventType === "model-input") {
-      return {
-        timestamp: new Date,
-        model,
-        type: "model-input"
-      };
-    }
-    if (eventType === "server-event") {
-      return {
-        timestamp: new Date,
-        model,
-        type: "server-event"
-      };
-    }
-    return null;
-  } catch {
-    return null;
+  const g = global;
+  if (g.__lmPrefillTps && g.__lmPrefillTps > 0) {
+    return g.__lmPrefillTps;
   }
+  return prefillTokensPerSecond;
 }
 function parseLogLine(line) {
   const prefillMatch = line.match(/Prompt processing progress: ([\d.]+)%/);
@@ -1012,6 +968,25 @@ function parseLogLine(line) {
     }
     generatedPacketCount++;
     currentGenerateTokens2 = generatedPacketCount;
+    lastLogUpdateAt = Date.now();
+    const now = Date.now();
+    if (global.__lmGenStartAt === undefined) {
+      global.__lmGenStartAt = now;
+      global.__lmLastGenTokens = 0;
+      global.__lmLastGenAt = now;
+      global.__lmGenTps = 0;
+    }
+    if (global.__lmLastGenAt > 0) {
+      const deltaTime = (now - global.__lmLastGenAt) / 1000;
+      const deltaTokens = currentGenerateTokens2 - global.__lmLastGenTokens;
+      if (deltaTime > 0 && deltaTokens > 0) {
+        const instant = deltaTokens / deltaTime;
+        const cur = global.__lmGenTps || 0;
+        global.__lmGenTps = cur === 0 ? instant : cur * 0.7 + instant * 0.3;
+      }
+    }
+    global.__lmLastGenTokens = currentGenerateTokens2;
+    global.__lmLastGenAt = now;
     console.log(`[LM Log Parser] Generated packet count: ${generatedPacketCount}`);
     return {
       timestamp: new Date,
@@ -1023,91 +998,11 @@ function parseLogLine(line) {
   return null;
 }
 function startLogWatcher() {
-  if (logWatcher)
+  if (logWatcher || fileWatcher)
     return;
-  const lmsCli = findLmsCli();
-  if (lmsCli) {
-    setWatcherState({ method: "cli", latestLogFile: null, isWatching: true });
-    console.log("[LM Log Watcher] Starting CLI log watcher using:", lmsCli);
-    startCliLogWatcher(lmsCli);
-  } else {
-    console.log("[LM Log Watcher] LM Studio CLI not found, falling back to file-based log parsing");
-    setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
-    startFileLogWatcher();
-  }
-}
-function startCliLogWatcher(lmsCli) {
-  try {
-    console.log(`[LM Log Watcher] Using LM Studio CLI: ${lmsCli}`);
-    const cliArgs = ["log", "stream", "--source", "server", "--json"];
-    logWatcher = spawn(lmsCli, cliArgs, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env }
-    });
-    let buffer = "";
-    let hasOutput = false;
-    const fallbackTimeout = setTimeout(() => {
-      if (!hasOutput) {
-        console.log("[LM CLI Watcher] No JSON output received within 3s, falling back to file-based watcher");
-        setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
-        stopLogWatcher();
-        startFileLogWatcher();
-      }
-    }, 3000);
-    logWatcher.stdout?.on("data", (chunk) => {
-      hasOutput = true;
-      clearTimeout(fallbackTimeout);
-      buffer += chunk.toString("utf8");
-      const lines = buffer.split(`
-`);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim())
-          continue;
-        const entry = parseJsonLogLine(line);
-        if (entry?.type === "prefill-progress" && entry.progress !== undefined) {
-          updatePrefillProgressFromLog(entry.progress);
-          console.log(`[LM CLI Watcher] prefill_progress: ${entry.progress}%`);
-        } else if (entry?.type === "chat-end") {
-          console.log("[LM CLI Watcher] chat_end detected");
-        } else if (entry?.type === "model-output") {
-          console.log("[LM CLI Watcher] model-output detected");
-        } else if (entry === null && line.trim().startsWith("[")) {
-          const textEntry = parseLogLine(line);
-          if (textEntry?.type === "prefill-progress" && textEntry.progress !== undefined) {
-            updatePrefillProgressFromLog(textEntry.progress);
-            console.log(`[LM CLI Watcher] prefill_progress (plain text): ${textEntry.progress}%`);
-          } else if (textEntry?.type === "model-output") {
-            console.log(`[LM CLI Watcher] model-output detected (generated packets: ${generatedPacketCount})`);
-          } else if (textEntry?.type === "chat-end") {
-            console.log("[LM CLI Watcher] chat_end detected (plain text)");
-          }
-        }
-      }
-    });
-    logWatcher.stderr?.on("data", (chunk) => {
-      console.error(`[LM CLI Watcher] stderr: ${chunk.toString("utf8").trim()}`);
-    });
-    logWatcher.on("error", (error) => {
-      console.error("[LM CLI Watcher] Error starting CLI watcher:", error.message);
-      clearTimeout(fallbackTimeout);
-      setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
-      stopLogWatcher();
-      startFileLogWatcher();
-    });
-    logWatcher.on("exit", (code, signal2) => {
-      console.log(`[LM CLI Watcher] exited with code ${code}, signal ${signal2}`);
-      clearTimeout(fallbackTimeout);
-      setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
-      stopLogWatcher();
-      startFileLogWatcher();
-    });
-  } catch (error) {
-    console.error("[LM CLI Watcher] Failed to start CLI watcher:", error.message);
-    setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
-    stopLogWatcher();
-    startFileLogWatcher();
-  }
+  setWatcherState({ method: "file", latestLogFile: null, isWatching: true });
+  console.log("[LM Log Watcher] Starting file-based log watcher for real-time updates");
+  startFileLogWatcher();
 }
 function startFileLogWatcher() {
   const home = process.env.HOME ?? "/Users/wclin";
@@ -1192,27 +1087,24 @@ function startFileLogWatcher() {
     setWatcherState({ method: "file", latestLogFile: null, error: error.message });
   }
 }
-function stopLogWatcher() {
-  if (logWatcher) {
-    try {
-      logWatcher.kill();
-    } catch {}
-    logWatcher = null;
-  }
-  setWatcherState({ isWatching: false, method: "none", latestLogFile: null });
-}
 function getLatestLogFile(logDir) {
   try {
     const now = new Date;
     const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
     const dir = path.join(logDir, yearMonth);
-    const files = fs.readdirSync(dir).filter((f) => typeof f === "string" && f.endsWith(".log")).sort().reverse();
-    if (files.length === 0)
+    const entries = fs.readdirSync(dir).filter((f) => typeof f === "string" && f.endsWith(".log")).map((f) => {
+      const fullPath = path.join(dir, f);
+      try {
+        const stat = fs.statSync(fullPath);
+        return { path: fullPath, mtimeMs: stat.mtimeMs };
+      } catch {
+        return null;
+      }
+    }).filter((f) => f !== null);
+    if (entries.length === 0)
       return null;
-    const latestFile = files[0];
-    if (!latestFile)
-      return null;
-    return path.join(dir, latestFile);
+    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return entries[0].path;
   } catch {
     return null;
   }
@@ -1417,13 +1309,17 @@ class Sampler {
     } else if (logActive && logGenerate === 0 && prefillProgress === 0) {
       generateTokens = 0;
     }
+    const parallel = lmStudioBase.models?.find((m) => m.id === lmStudioBase.modelName)?.parallel || lmStudioBase.models?.find((m) => m.loadedInstances?.length)?.parallel || (lmStudioBase.models?.find((m) => m.loadedInstances?.[0]?.config?.parallel) ? lmStudioBase.models.find((m) => m.loadedInstances?.[0]?.config?.parallel).loadedInstances[0].config.parallel : undefined);
     const lmStudio = {
       ...lmStudioBase,
       prefillProgress,
       generateTokens,
       tokensPerSecond: getTokensPerSecondFromLog() > 0 ? getTokensPerSecondFromLog() : getTokensPerSecond() > 0 ? getTokensPerSecond() : undefined,
       prefillTokensPerSecond: getPrefillTokensPerSecondFromLog() > 0 ? getPrefillTokensPerSecondFromLog() : undefined,
-      logStats: getLogStats()
+      logStats: getLogStats(),
+      requests: getActiveRequests(),
+      parallel,
+      activeRequestCount: getActiveRequestCount()
     };
     return {
       at,
@@ -1443,7 +1339,7 @@ class Sampler {
 }
 
 // src/service/sources.ts
-import { execFile as execFile3, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile2, spawn } from "node:child_process";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import os2 from "node:os";
 
@@ -1634,7 +1530,7 @@ var parseWindowsCommands = (stdout) => {
 
 // src/service/sources.ts
 var run = (file, args, okExitCodes = [0]) => new Promise((resolve, reject) => {
-  execFile3(file, args, { timeout: 1e4, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
+  execFile2(file, args, { timeout: 1e4, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
     const code = error && "code" in error && typeof error.code === "number" ? error.code : error ? -1 : 0;
     if (!error || okExitCodes.includes(code))
       resolve(stdout);
@@ -1791,7 +1687,7 @@ var windowsSource = () => {
     if (helper && helper.exitCode === null)
       return helper;
     const encoded = Buffer.from(WINDOWS_HELPER, "utf16le").toString("base64");
-    const child = spawn2("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+    const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
     });

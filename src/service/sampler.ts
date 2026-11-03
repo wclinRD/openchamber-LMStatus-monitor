@@ -9,7 +9,7 @@ import { planStop, type StopTarget } from './stop.ts';
 import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tree.ts';
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
-import { getPrefillProgress, getGenerateTokens, getTokensPerSecond } from './chat-proxy.ts';
+import { getPrefillProgress, getGenerateTokens, getTokensPerSecond, getActiveRequests, getActiveRequestCount } from './chat-proxy.ts';
 import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats, hasRecentLogActivity, getTokensPerSecondFromLog, getPrefillTokensPerSecondFromLog } from './lm-studio-log-parser.ts';
 
 export const SAMPLE_INTERVAL_MS = 2_000;
@@ -238,6 +238,10 @@ export class Sampler {
       generateTokens = 0;
     }
     
+    const parallel = lmStudioBase.models?.find((m: any) => m.id === lmStudioBase.modelName)?.parallel 
+      || lmStudioBase.models?.find((m: any) => m.loadedInstances?.length)?.parallel
+      || (lmStudioBase.models?.find((m: any) => m.loadedInstances?.[0]?.config?.parallel) ? lmStudioBase.models.find((m: any) => m.loadedInstances?.[0]?.config?.parallel)!.loadedInstances![0].config!.parallel : undefined);
+
     const lmStudio = {
       ...lmStudioBase,
       prefillProgress,
@@ -245,6 +249,9 @@ export class Sampler {
       tokensPerSecond: getTokensPerSecondFromLog() > 0 ? getTokensPerSecondFromLog() : (getTokensPerSecond() > 0 ? getTokensPerSecond() : undefined),
       prefillTokensPerSecond: getPrefillTokensPerSecondFromLog() > 0 ? getPrefillTokensPerSecondFromLog() : undefined,
       logStats: getLogStats(),
+      requests: getActiveRequests(),
+      parallel,
+      activeRequestCount: getActiveRequestCount(),
     };
 
     return {
