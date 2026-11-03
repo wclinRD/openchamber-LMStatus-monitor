@@ -34,6 +34,7 @@ let generateStartAt = 0;
 let lastGenerateTokens = 0;
 let lastGenerateAt = 0;
 let tokensPerSecond = 0;
+let prefillTokensPerSecond = 0;
 
 /** Log event statistics */
 const logStats: LmLogStats = {
@@ -240,6 +241,7 @@ export function resetLmStudioStats(): void {
   lastGenerateTokens = 0;
   lastGenerateAt = 0;
   tokensPerSecond = 0;
+  prefillTokensPerSecond = 0;
 }
 
 /**
@@ -261,6 +263,13 @@ export function getGenerateTokens(): number {
  */
 export function getTokensPerSecondFromLog(): number {
   return tokensPerSecond;
+}
+
+/**
+ * Gets prefill tokens per second from log parser.
+ */
+export function getPrefillTokensPerSecondFromLog(): number {
+  return prefillTokensPerSecond;
 }
 
 /**
@@ -314,7 +323,27 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
             console.log('[LM Log Parser] Switched back to prefill phase, cleared generate counter');
           }
         }
+      }
+      const prefillTpsMatch = content.match(/(?:prompt|prefill).*?([\d.]+)\s*tokens?\/s/i) || content.match(/([\d.]+)\s*tokens?\/s.*?(?:prompt|prefill)/i) || content.match(/Prompt eval rate.*?([\d.]+)/i);
+      if (prefillTpsMatch?.[1]) {
+        const tps = parseFloat(prefillTpsMatch[1]);
+        if (!isNaN(tps) && tps > 0) {
+          prefillTokensPerSecond = tps;
+        }
+      } else if (content.includes('Prompt processing complete')) {
+        prefillTokensPerSecond = 0;
+      } else if (content.match(/Processed .* tokens in .* seconds/i)) {
+        const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
+        const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
+        if (tokensMatch?.[1] && timeMatch?.[1]) {
+          const tokens = parseFloat(tokensMatch[1]);
+          const seconds = parseFloat(timeMatch[1]);
+          if (tokens > 0 && seconds > 0) {
+            prefillTokensPerSecond = tokens / seconds;
+          }
+        }
       } else if (
+        content.match(/Prompt processing.*completed/i) ||
         content.includes('chat completion') ||
         content.includes('generation complete') ||
         content.includes('Prompt processing complete') ||

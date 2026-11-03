@@ -132,6 +132,8 @@ export interface LmStudioStatus {
   generateTokens: number;
   /** Tokens per second during generation. */
   tokensPerSecond?: number;
+  /** Tokens per second during prefill. */
+  prefillTokensPerSecond?: number;
   /** Log event statistics from LM Studio CLI. */
   logStats?: {
     totalEvents: number;

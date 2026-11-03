@@ -168,7 +168,8 @@ const render = (snapshot: Snapshot): void => {
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0 || (lmStudio.tokensPerSecond && lmStudio.tokensPerSecond > 0);
   if (isGenerating) {
     const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
-    prefillValue.textContent = formatPrefillPercent(prefillDisplay);
+    const ppTps = lmStudio.prefillTokensPerSecond;
+    prefillValue.textContent = ppTps && ppTps > 0 ? `${formatPrefillPercent(prefillDisplay)} · ${ppTps.toFixed(1)} tok/s` : formatPrefillPercent(prefillDisplay);
     prefillMeter.set(prefillDisplay);
     const tps = lmStudio.tokensPerSecond;
     if (tps && tps > 0) {
@@ -179,6 +180,11 @@ const render = (snapshot: Snapshot): void => {
     } else {
       generateValue.textContent = '—';
     }
+  } else if (lmStudio.prefillProgress > 0 && lmStudio.prefillProgress < 100) {
+    const ppTps = lmStudio.prefillTokensPerSecond;
+    prefillValue.textContent = ppTps && ppTps > 0 ? `${formatPrefillPercent(lmStudio.prefillProgress)} · ${ppTps.toFixed(1)} tok/s` : formatPrefillPercent(lmStudio.prefillProgress);
+    prefillMeter.set(lmStudio.prefillProgress);
+    generateValue.textContent = '—';
   } else {
     prefillValue.textContent = '—';
     prefillMeter.set(0);

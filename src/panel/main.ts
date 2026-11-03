@@ -433,7 +433,12 @@ const render = (snapshot: Snapshot): void => {
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
   if (isGenerating) {
     const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
-    lmPrefillValue.textContent = formatPrefillPercent(prefillDisplay);
+    const ppTps = lmStudio.prefillTokensPerSecond;
+    if (ppTps && ppTps > 0) {
+      lmPrefillValue.textContent = `${formatPrefillPercent(prefillDisplay)} · ${ppTps.toFixed(1)} tok/s`;
+    } else {
+      lmPrefillValue.textContent = formatPrefillPercent(prefillDisplay);
+    }
     const tps = lmStudio.tokensPerSecond;
     if (tps && tps > 0) {
       const tokens = lmStudio.generateTokens > 0 ? `${lmStudio.generateTokens.toLocaleString()} tokens · ` : '';
@@ -443,6 +448,14 @@ const render = (snapshot: Snapshot): void => {
     } else {
       lmGenerateValue.textContent = '—';
     }
+  } else if (lmStudio.prefillProgress > 0 && lmStudio.prefillProgress < 100) {
+    const ppTps = lmStudio.prefillTokensPerSecond;
+    if (ppTps && ppTps > 0) {
+      lmPrefillValue.textContent = `${formatPrefillPercent(lmStudio.prefillProgress)} · ${ppTps.toFixed(1)} tok/s`;
+    } else {
+      lmPrefillValue.textContent = formatPrefillPercent(lmStudio.prefillProgress);
+    }
+    lmGenerateValue.textContent = '—';
   } else {
     lmPrefillValue.textContent = '—';
     lmGenerateValue.textContent = '—';

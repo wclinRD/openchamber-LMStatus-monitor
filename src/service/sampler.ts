@@ -10,7 +10,7 @@ import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tre
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
 import { getPrefillProgress, getGenerateTokens, getTokensPerSecond } from './chat-proxy.ts';
-import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats, hasRecentLogActivity, getTokensPerSecondFromLog } from './lm-studio-log-parser.ts';
+import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats, hasRecentLogActivity, getTokensPerSecondFromLog, getPrefillTokensPerSecondFromLog } from './lm-studio-log-parser.ts';
 
 export const SAMPLE_INTERVAL_MS = 2_000;
 /** Listening ports change rarely and cost the most to read, so every other sample. */
@@ -243,6 +243,7 @@ export class Sampler {
       prefillProgress,
       generateTokens,
       tokensPerSecond: getTokensPerSecondFromLog() > 0 ? getTokensPerSecondFromLog() : (getTokensPerSecond() > 0 ? getTokensPerSecond() : undefined),
+      prefillTokensPerSecond: getPrefillTokensPerSecondFromLog() > 0 ? getPrefillTokensPerSecondFromLog() : undefined,
       logStats: getLogStats(),
     };
 
