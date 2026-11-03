@@ -130,6 +130,8 @@ export interface LmStudioStatus {
   prefillProgress: number;
   /** Number of tokens generated during the current generation. 0 when idle or not generating. */
   generateTokens: number;
+  /** Tokens per second during generation. */
+  tokensPerSecond?: number;
   /** Log event statistics from LM Studio CLI. */
   logStats?: {
     totalEvents: number;

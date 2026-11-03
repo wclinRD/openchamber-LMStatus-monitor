@@ -30,6 +30,10 @@ let generatedPacketCount: number = 0;
 let logWatcher: ChildProcess | null = null;
 /** Timestamp of last time we updated prefill/generate from logs */
 let lastLogUpdateAt = 0;
+let generateStartAt = 0;
+let lastGenerateTokens = 0;
+let lastGenerateAt = 0;
+let tokensPerSecond = 0;
 
 /** Log event statistics */
 const logStats: LmLogStats = {
@@ -201,8 +205,27 @@ export function updatePrefillProgressFromLog(progress: number): void {
  */
 export function updateGenerateTokensFromLog(tokens: number): void {
   if (tokens < 0) return;
+  const now = Date.now();
+  if (generateStartAt === 0 && tokens > 0) {
+    generateStartAt = now;
+    lastGenerateTokens = 0;
+    lastGenerateAt = now;
+    tokensPerSecond = 0;
+  }
+  if (tokens > currentGenerateTokens) {
+    if (lastGenerateAt > 0) {
+      const deltaTime = (now - lastGenerateAt) / 1000;
+      const deltaTokens = tokens - lastGenerateTokens;
+      if (deltaTime > 0 && deltaTokens > 0) {
+        const instant = deltaTokens / deltaTime;
+        tokensPerSecond = tokensPerSecond === 0 ? instant : tokensPerSecond * 0.7 + instant * 0.3;
+      }
+    }
+    lastGenerateTokens = tokens;
+    lastGenerateAt = now;
+  }
   currentGenerateTokens = Math.max(0, tokens);
-  lastLogUpdateAt = Date.now();
+  lastLogUpdateAt = now;
 }
 
 /**
@@ -213,6 +236,10 @@ export function resetLmStudioStats(): void {
   currentGenerateTokens = 0;
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
+  generateStartAt = 0;
+  lastGenerateTokens = 0;
+  lastGenerateAt = 0;
+  tokensPerSecond = 0;
 }
 
 /**
@@ -227,6 +254,13 @@ export function getPrefillProgress(): number {
  */
 export function getGenerateTokens(): number {
   return currentGenerateTokens;
+}
+
+/**
+ * Gets tokens per second from log parser.
+ */
+export function getTokensPerSecondFromLog(): number {
+  return tokensPerSecond;
 }
 
 /**

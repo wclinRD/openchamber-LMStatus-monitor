@@ -432,8 +432,17 @@ const render = (snapshot: Snapshot): void => {
 
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
   if (isGenerating) {
-    lmPrefillValue.textContent = formatPrefillPercent(lmStudio.prefillProgress);
-    lmGenerateValue.textContent = lmStudio.generateTokens.toLocaleString();
+    const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
+    lmPrefillValue.textContent = formatPrefillPercent(prefillDisplay);
+    const tps = lmStudio.tokensPerSecond;
+    if (tps && tps > 0) {
+      const tokens = lmStudio.generateTokens > 0 ? `${lmStudio.generateTokens.toLocaleString()} tokens · ` : '';
+      lmGenerateValue.textContent = `${tokens}${tps.toFixed(1)} tok/s`;
+    } else if (lmStudio.generateTokens > 0) {
+      lmGenerateValue.textContent = `${lmStudio.generateTokens.toLocaleString()} tokens`;
+    } else {
+      lmGenerateValue.textContent = '—';
+    }
   } else {
     lmPrefillValue.textContent = '—';
     lmGenerateValue.textContent = '—';

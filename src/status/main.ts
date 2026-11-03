@@ -165,11 +165,20 @@ const render = (snapshot: Snapshot): void => {
 
   // Only show prefill/generate values when there's an active generation.
   // When idle, show "—" to indicate no active inference.
-  const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
+  const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0 || (lmStudio.tokensPerSecond && lmStudio.tokensPerSecond > 0);
   if (isGenerating) {
-    prefillValue.textContent = formatPrefillPercent(lmStudio.prefillProgress);
-    prefillMeter.set(lmStudio.prefillProgress);
-    generateValue.textContent = lmStudio.generateTokens.toLocaleString();
+    const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
+    prefillValue.textContent = formatPrefillPercent(prefillDisplay);
+    prefillMeter.set(prefillDisplay);
+    const tps = lmStudio.tokensPerSecond;
+    if (tps && tps > 0) {
+      const tokens = lmStudio.generateTokens > 0 ? `${lmStudio.generateTokens.toLocaleString()} tokens · ` : '';
+      generateValue.textContent = `${tokens}${tps.toFixed(1)} tok/s`;
+    } else if (lmStudio.generateTokens > 0) {
+      generateValue.textContent = lmStudio.generateTokens.toLocaleString();
+    } else {
+      generateValue.textContent = '—';
+    }
   } else {
     prefillValue.textContent = '—';
     prefillMeter.set(0);

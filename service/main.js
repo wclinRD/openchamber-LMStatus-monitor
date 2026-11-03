@@ -443,6 +443,10 @@ var LM_STUDIO_PORT2 = 1234;
 var LM_STUDIO_V1_URL2 = `http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v1/chat`;
 var currentPrefillProgress = 0;
 var currentGenerateTokens = 0;
+var generateStartAt = 0;
+var lastGenerateTokens = 0;
+var lastGenerateAt = 0;
+var tokensPerSecond = 0;
 async function isLmStudioModel(modelId) {
   try {
     const response = await fetch(`http://${LM_STUDIO_HOST2}:${LM_STUDIO_PORT2}/api/v0/models`, {
@@ -568,6 +572,10 @@ async function proxyChatRequest(req, res, body) {
             if (eventType === "chat.start") {
               currentGenerateTokens = 0;
               currentPrefillProgress = 0;
+              generateStartAt = Date.now();
+              lastGenerateTokens = 0;
+              lastGenerateAt = generateStartAt;
+              tokensPerSecond = 0;
               console.log("[LM Stat Log] chat_start: generation started");
               pushLmStudioEvent({ type: "chat-start", prefillProgress: 0, generateTokens: 0 });
             } else if (eventType === "prompt_processing.start" && data) {
@@ -583,6 +591,17 @@ async function proxyChatRequest(req, res, body) {
               } catch {}
             } else if (eventType === "message.delta" && data) {
               currentGenerateTokens += 1;
+              const now = Date.now();
+              if (lastGenerateAt > 0) {
+                const deltaTime = (now - lastGenerateAt) / 1000;
+                const deltaTokens = currentGenerateTokens - lastGenerateTokens;
+                if (deltaTime > 0 && deltaTokens > 0) {
+                  const instant = deltaTokens / deltaTime;
+                  tokensPerSecond = tokensPerSecond === 0 ? instant : tokensPerSecond * 0.7 + instant * 0.3;
+                }
+              }
+              lastGenerateTokens = currentGenerateTokens;
+              lastGenerateAt = now;
               try {
                 const parsed = JSON.parse(data);
                 if (parsed.content) {
@@ -607,9 +626,22 @@ async function proxyChatRequest(req, res, body) {
                 const parsed = JSON.parse(data);
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   updateGenerateTokens(parsed.result.stats.total_output_tokens);
+                  currentGenerateTokens = parsed.result.stats.total_output_tokens;
+                  if (generateStartAt > 0) {
+                    const elapsed = (Date.now() - generateStartAt) / 1000;
+                    if (elapsed > 0) {
+                      tokensPerSecond = currentGenerateTokens / elapsed;
+                    }
+                  }
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=${parsed.result.stats.total_output_tokens}`);
-                  pushLmStudioEvent({ type: "chat-end", generateTokens: parsed.result.stats.total_output_tokens });
+                  pushLmStudioEvent({ type: "chat-end", generateTokens: currentGenerateTokens });
                 } else {
+                  if (generateStartAt > 0 && currentGenerateTokens > 0) {
+                    const elapsed = (Date.now() - generateStartAt) / 1000;
+                    if (elapsed > 0) {
+                      tokensPerSecond = currentGenerateTokens / elapsed;
+                    }
+                  }
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
                   pushLmStudioEvent({ type: "chat-end", generateTokens: currentGenerateTokens });
                 }
@@ -647,6 +679,9 @@ function getPrefillProgress() {
 function getGenerateTokens() {
   return currentGenerateTokens;
 }
+function getTokensPerSecond() {
+  return tokensPerSecond;
+}
 
 // src/service/lm-studio-log-parser.ts
 import { execFile as execFile2, spawn } from "node:child_process";
@@ -657,6 +692,10 @@ var currentGenerateTokens2 = 0;
 var generatedPacketCount = 0;
 var logWatcher = null;
 var lastLogUpdateAt = 0;
+var generateStartAt2 = 0;
+var lastGenerateTokens2 = 0;
+var lastGenerateAt2 = 0;
+var tokensPerSecond2 = 0;
 var logStats = {
   totalEvents: 0,
   byLevel: {},
@@ -748,20 +787,46 @@ function updatePrefillProgressFromLog(progress) {
 function updateGenerateTokensFromLog(tokens) {
   if (tokens < 0)
     return;
+  const now = Date.now();
+  if (generateStartAt2 === 0 && tokens > 0) {
+    generateStartAt2 = now;
+    lastGenerateTokens2 = 0;
+    lastGenerateAt2 = now;
+    tokensPerSecond2 = 0;
+  }
+  if (tokens > currentGenerateTokens2) {
+    if (lastGenerateAt2 > 0) {
+      const deltaTime = (now - lastGenerateAt2) / 1000;
+      const deltaTokens = tokens - lastGenerateTokens2;
+      if (deltaTime > 0 && deltaTokens > 0) {
+        const instant = deltaTokens / deltaTime;
+        tokensPerSecond2 = tokensPerSecond2 === 0 ? instant : tokensPerSecond2 * 0.7 + instant * 0.3;
+      }
+    }
+    lastGenerateTokens2 = tokens;
+    lastGenerateAt2 = now;
+  }
   currentGenerateTokens2 = Math.max(0, tokens);
-  lastLogUpdateAt = Date.now();
+  lastLogUpdateAt = now;
 }
 function resetLmStudioStats() {
   currentPrefillProgress2 = 0;
   currentGenerateTokens2 = 0;
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
+  generateStartAt2 = 0;
+  lastGenerateTokens2 = 0;
+  lastGenerateAt2 = 0;
+  tokensPerSecond2 = 0;
 }
 function getPrefillProgress2() {
   return currentPrefillProgress2;
 }
 function getGenerateTokens2() {
   return currentGenerateTokens2;
+}
+function getTokensPerSecondFromLog() {
+  return tokensPerSecond2;
 }
 function parseJsonLogLine(line) {
   try {
@@ -1332,6 +1397,7 @@ class Sampler {
       ...lmStudioBase,
       prefillProgress,
       generateTokens,
+      tokensPerSecond: getTokensPerSecondFromLog() > 0 ? getTokensPerSecondFromLog() : getTokensPerSecond() > 0 ? getTokensPerSecond() : undefined,
       logStats: getLogStats()
     };
     return {
