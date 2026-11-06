@@ -607,7 +607,7 @@ async function isLmStudioModel(modelId) {
 function updatePrefillProgress(progress) {
   if (progress < 0 || progress > 1)
     return;
-  updateFromProxy(Math.round(progress * 100), 0);
+  updateFromProxy(Math.round(progress * 1000) / 10, 0);
 }
 async function proxyChatRequest(req, res, body) {
   const reqId = randomUUID();
@@ -753,7 +753,7 @@ async function proxyChatRequest(req, res, body) {
                 const parsed = JSON.parse(data);
                 if (typeof parsed.progress === "number") {
                   updatePrefillProgress(parsed.progress);
-                  const pp = Math.round(parsed.progress * 100);
+                  const pp = Math.round(parsed.progress * 1000) / 10;
                   const ar = activeRequests.get(reqId);
                   if (ar) {
                     ar.state = "prefill";

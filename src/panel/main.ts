@@ -492,9 +492,9 @@ const render = (snapshot: Snapshot): void => {
     } else if (r.state === 'prefill') {
       const ppTps = r.prefillTokensPerSecond;
       if (ppTps && ppTps > 0) {
-        st.textContent = `Prefill ${r.prefillProgress}% · ${ppTps.toFixed(1)} tok/s`;
+        st.textContent = `Prefill ${formatPrefillPercent(r.prefillProgress)} · ${ppTps.toFixed(1)} tok/s`;
       } else {
-        st.textContent = `Prefill ${r.prefillProgress}%`;
+        st.textContent = formatPrefillPercent(r.prefillProgress);
       }
     } else {
       st.textContent = '—';

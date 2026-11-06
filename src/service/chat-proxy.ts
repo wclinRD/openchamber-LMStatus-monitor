@@ -99,7 +99,9 @@ async function isLmStudioModel(modelId: string): Promise<boolean> {
  */
 export function updatePrefillProgress(progress: number): void {
   if (progress < 0 || progress > 1) return;
-  updateFromProxy(Math.round(progress * 100), 0);
+  // Keep one decimal place of precision so the UI shows smooth increments (e.g. 99.9%)
+  // rather than rounding to 100% early.
+  updateFromProxy(Math.round(progress * 1000) / 10, 0);
 }
 
 /**
@@ -274,7 +276,7 @@ export async function proxyChatRequest(
                 const parsed = JSON.parse(data) as { progress?: number };
                 if (typeof parsed.progress === "number") {
                   updatePrefillProgress(parsed.progress);
-                  const pp = Math.round(parsed.progress * 100);
+                  const pp = Math.round(parsed.progress * 1000) / 10;
                   const ar = activeRequests.get(reqId);
                   if (ar) {
                     ar.state = 'prefill';
