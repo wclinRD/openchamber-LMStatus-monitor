@@ -9,7 +9,7 @@ import { planStop, type StopTarget } from './stop.ts';
 import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tree.ts';
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
-import { getActiveRequests, getActiveRequestCount } from './chat-proxy.ts';
+import { getActiveRequests, getActiveRequestCount, getAggregateRunStateFromActiveRequests } from './chat-proxy.ts';
 import { getLogStats } from './lm-studio-log-parser.ts';
 import { getLmStudioRunState } from './lm-studio-state.ts';
 
@@ -210,7 +210,8 @@ export class Sampler {
     }
 
     const lmStudioBase = await fetchLmStudioStatus();
-    const runState = getLmStudioRunState();
+    const requestCount = getActiveRequestCount();
+    const runState = requestCount > 1 ? getAggregateRunStateFromActiveRequests() : getLmStudioRunState();
 
     // Derive TPS from the run state: total tokens divided by elapsed time since chat start
     let computedTps: number | undefined = undefined;

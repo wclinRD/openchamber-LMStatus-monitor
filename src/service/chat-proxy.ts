@@ -6,7 +6,8 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { fetchLmStudioStatus } from './lmstudio.ts';
 import { pushLmStudioEvent } from './lm-studio-events.ts';
-import { updateFromProxy, resetLmStudioRunState, setChatStartAt, getLmStudioRunStatePlain, getLmStudioRunState } from './lm-studio-state.ts';
+import { updateFromProxy, updateGenerateOnlyFromProxy, updatePrefillOnlyFromProxy, updateLogPrefillOnly, updateLogGenerateOnly, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
+import type { LmStudioRunState } from './lm-studio-state.ts';
 
 const LM_STUDIO_HOST = "127.0.0.1";
 const LM_STUDIO_PORT = 1234;
@@ -101,7 +102,7 @@ export function updatePrefillProgress(progress: number): void {
   if (progress < 0 || progress > 1) return;
   // Keep one decimal place of precision so the UI shows smooth increments (e.g. 99.9%)
   // rather than rounding to 100% early.
-  updateFromProxy(Math.round(progress * 1000) / 10, 0);
+  updatePrefillOnlyFromProxy(Math.round(progress * 1000) / 10);
 }
 
 /**
@@ -109,7 +110,7 @@ export function updatePrefillProgress(progress: number): void {
  */
 export function updateGenerateTokens(totalOutputTokens: number | null): void {
   if (totalOutputTokens === null || totalOutputTokens < 0) return;
-  updateFromProxy(100, Math.max(0, totalOutputTokens));
+  updateGenerateOnlyFromProxy(Math.max(0, totalOutputTokens));
 }
 
 /**
@@ -255,8 +256,6 @@ export async function proxyChatRequest(
             }
 
             if (eventType === "chat.start") {
-              resetLmStudioRunState();
-              setChatStartAt();
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.state = 'prefill';
@@ -275,8 +274,9 @@ export async function proxyChatRequest(
               try {
                 const parsed = JSON.parse(data) as { progress?: number };
                 if (typeof parsed.progress === "number") {
-                  updatePrefillProgress(parsed.progress);
                   const pp = Math.round(parsed.progress * 1000) / 10;
+                  // Use log-state update to avoid SSE proxy's timestamp overtaking the log parser's progress.
+                  updateLogPrefillOnly(pp);
                   const ar = activeRequests.get(reqId);
                   if (ar) {
                     ar.state = 'prefill';
@@ -300,12 +300,12 @@ export async function proxyChatRequest(
               }
               lastGenerateTokens = currentGenerateTokens;
               lastGenerateAt = now;
-              updateFromProxy(100, currentGenerateTokens, instantTps);
-              const state = getLmStudioRunStatePlain();
+              updateGenerateOnlyFromProxy(currentGenerateTokens, instantTps);
               const ar = activeRequests.get(reqId);
               if (ar) {
+                // In multi-thread/concurrent inference, a model may still be prefilling while generating new tokens.
+                // Keep prefillProgress from the latest prompt_processing.progress and do not set it to 100 here.
                 ar.state = 'generate';
-                ar.prefillProgress = 100;
                 ar.generateTokens = currentGenerateTokens;
                 ar.tokensPerSecond = instantTps ?? 0;
                 ar.lastGenTokens = currentGenerateTokens;
@@ -335,17 +335,16 @@ export async function proxyChatRequest(
                 let finalTokens = currentGenerateTokens;
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   finalTokens = parsed.result.stats.total_output_tokens;
-                  updateFromProxy(100, finalTokens);
+                  updateGenerateOnlyFromProxy(finalTokens);
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=${finalTokens}`);
                 } else {
-                  updateFromProxy(100, currentGenerateTokens);
+                  updateGenerateOnlyFromProxy(currentGenerateTokens);
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
                 }
                 const state = getLmStudioRunStatePlain();
                 const ar = activeRequests.get(reqId);
                 if (ar) {
                   ar.state = 'generate';
-                  ar.prefillProgress = 100;
                   ar.generateTokens = finalTokens;
                   ar.tokensPerSecond = state.tokensPerSecond ?? 0;
                 }
@@ -355,9 +354,17 @@ export async function proxyChatRequest(
                 res.write(`data: [DONE]\n\n`);
                 setTimeout(() => {
                   activeRequests.delete(reqId);
+                  if (activeRequests.size === 0) {
+                    resetLmStudioRunState();
+                    setChatStartAt();
+                  }
                 }, 2000);
               } catch {
                 activeRequests.delete(reqId);
+                if (activeRequests.size === 0) {
+                  resetLmStudioRunState();
+                  setChatStartAt();
+                }
               }
             } else if (eventType === "prompt_processing.end") {
               const ar = activeRequests.get(reqId);
@@ -369,7 +376,7 @@ export async function proxyChatRequest(
             } else if (eventType === "chat.end") {
               const ar = activeRequests.get(reqId);
               if (ar) {
-                ar.prefillProgress = 100;
+                // Don't force prefillProgress to 100 here; keep it from prompt_processing.end or log parser.
                 ar.state = 'generate';
               }
             }
@@ -410,4 +417,57 @@ export function getGenerateTokens(): number {
  */
 export function getTokensPerSecond(): number {
   return getLmStudioRunState().tokensPerSecond ?? 0;
+}
+
+/**
+ * Aggregates per-request states from the activeRequests Map into a unified state.
+ * Used when concurrent inference is enabled to avoid global state overwriting.
+ */
+export function getAggregateRunStateFromActiveRequests(): LmStudioRunState {
+  const arr = getActiveRequests();
+  if (arr.length === 0) {
+    return getLmStudioRunState();
+  }
+  let maxPrefill = 0;
+  let sumGenerate = 0;
+  let sumTps = 0;
+  let maxPrefillTps = 0;
+  let state: 'idle' | 'prefill' | 'generate' = 'idle';
+  let chatStartAt = 0;
+  let lastUpdateAt = 0;
+  for (const r of arr) {
+    if (r.state === 'prefill') {
+      if (r.prefillProgress > maxPrefill) maxPrefill = r.prefillProgress;
+      if (r.prefillTokensPerSecond && r.prefillTokensPerSecond > 0) {
+        if (r.prefillTokensPerSecond > maxPrefillTps) maxPrefillTps = r.prefillTokensPerSecond;
+      }
+    } else if (r.state === 'generate') {
+      sumGenerate += r.generateTokens;
+      if (r.tokensPerSecond && r.tokensPerSecond > 0) sumTps += r.tokensPerSecond;
+      if (r.lastGenAt && r.lastGenAt > lastUpdateAt) lastUpdateAt = r.lastGenAt;
+      state = 'generate';
+    } else if (r.state === 'idle' && state !== 'generate') {
+      if (r.lastGenAt && r.lastGenAt > lastUpdateAt) lastUpdateAt = r.lastGenAt;
+    }
+    if (r.startedAt && r.startedAt > chatStartAt) chatStartAt = r.startedAt;
+  }
+  // Use global state's prefill progress if any request is in prefill phase,
+  // because the log parser continuously updates the global state for concurrent requests.
+  const globalState = getLmStudioRunState();
+  const hasPrefill = arr.some(r => r.state === 'prefill');
+  const finalPrefillProgress = hasPrefill ? Math.max(maxPrefill, globalState.prefillProgress) : maxPrefill;
+  const finalPrefillTps = hasPrefill ? (globalState.prefillTokensPerSecond ?? maxPrefillTps) : maxPrefillTps;
+  return {
+    state,
+    prefillProgress: finalPrefillProgress,
+    generateTokens: sumGenerate,
+    tokensPerSecond: sumTps > 0 ? sumTps : undefined,
+    prefillTokensPerSecond: finalPrefillTps > 0 ? finalPrefillTps : undefined,
+    lastUpdateAt,
+    chatStartAt,
+    prefillSource: hasPrefill ? globalState.prefillSource : 'proxy',
+    generateSource: 'proxy',
+    tpsSource: sumTps > 0 ? 'proxy' : undefined,
+    prefillTpsSource: finalPrefillTps > 0 ? globalState.prefillTpsSource ?? 'proxy' : undefined,
+  };
 }

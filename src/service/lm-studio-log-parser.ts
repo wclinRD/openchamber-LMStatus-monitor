@@ -5,7 +5,9 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { updateFromLog, updatePrefillTokensPerSecond, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
+import { updateFromLog, updateLogPrefillOnly, updateLogGenerateOnly, updatePrefillTokensPerSecond, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
+import { getActiveRequestCount } from './chat-proxy.ts';
+import type { LmStudioRunState } from './lm-studio-state.ts';
 
 interface LmLogEntry {
   timestamp: Date;
@@ -195,7 +197,7 @@ function execFileSync(file: string, args: string[], options: { timeout: number }
  */
 export function updatePrefillProgressFromLog(progress: number): void {
   if (progress < 0 || progress > 100) return;
-  updateFromLog(progress, 0);
+  updateLogPrefillOnly(progress);
   lastLogUpdateAt = Date.now();
 }
 
@@ -204,18 +206,21 @@ export function updatePrefillProgressFromLog(progress: number): void {
  */
 export function updateGenerateTokensFromLog(tokens: number): void {
   if (tokens < 0) return;
-  updateFromLog(0, tokens);
+  updateLogGenerateOnly(tokens);
   lastLogUpdateAt = Date.now();
 }
 
 /**
  * Resets the prefill progress and generate tokens when generation completes or becomes idle.
+ * Skips global state reset when concurrent requests are still active.
  */
 export function resetLmStudioStats(): void {
-  resetLmStudioRunState();
+  if (getActiveRequestCount() === 0) {
+    resetLmStudioRunState();
+    setChatStartAt();
+  }
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
-  setChatStartAt();
   prefillTokensPerSecond = 0;
 }
 
@@ -292,7 +297,7 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
         const progress = parseFloat(prefillMatch[1]);
         if (!isNaN(progress) && progress >= 0 && progress <= 100) {
           eventType = 'prefill-progress';
-          if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+          if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
             updateFromLog(0, 0);
             generatedPacketCount = 0;
             console.log('[LM Log Parser] Switched back to prefill phase, cleared generate counter');
@@ -356,12 +361,6 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
             : 'unknown';
 
     if (eventType === 'model-output') {
-      // Clear prefill progress when transitioning to generate phase
-      if (getLmStudioRunState().prefillProgress > 0) {
-        updateFromLog(0, 0);
-        console.log('[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress');
-      }
-
       // Extract stats object (direct structured JSON)
       const stats = (typeof parsed.stats === 'object' && parsed.stats !== null)
         ? parsed.stats as Record<string, unknown>
@@ -474,8 +473,8 @@ export function parseLogLine(line: string): LmLogEntry | null {
   if (prefillMatch?.[1]) {
     const progress = parseFloat(prefillMatch[1]);
     if (!isNaN(progress)) {
-      // Clear generate counter when switching back to prefill phase
-      if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+      // Clear generate counter when switching back to prefill phase only if no concurrent requests remain.
+      if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
         updateFromLog(0, 0);
         generatedPacketCount = 0;
         console.log('[LM Log Parser] Switched back to prefill phase via plain text log, cleared generate counter');
@@ -503,15 +502,9 @@ export function parseLogLine(line: string): LmLogEntry | null {
   
   // Check for generate phase start (Generated packet indicates model output)
   if (line.includes('Generated packet') || line.includes('llm.prediction.output')) {
-    // Clear prefill progress when transitioning to generate phase
-    if (getLmStudioRunState().prefillProgress > 0) {
-      updateFromLog(0, 0);
-      console.log('[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress');
-    }
-    
     // Count generated packets in real-time
     generatedPacketCount++;
-    updateFromLog(0, generatedPacketCount);
+    updateLogGenerateOnly(generatedPacketCount);
     lastLogUpdateAt = Date.now();
     
     return {
@@ -676,15 +669,17 @@ function startFileLogWatcher(): void {
         }
         
         if (latestEventType === 'chat-end') {
-          // Clear all stats when a conversation ends
-          resetLmStudioStats();
-          console.log('[LM File Watcher] chat-end detected, cleared all stats');
+          // Clear all stats when a conversation ends only if no concurrent requests remain.
+          if (getActiveRequestCount() === 0) {
+            resetLmStudioStats();
+          }
+          console.log('[LM File Watcher] chat-end detected');
         } else if (latestEventType === 'prefill-progress') {
           updatePrefillProgressFromLog(latestPrefillProgress!);
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
           
-          // Clear generate counter when switching back to prefill phase
-          if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+          // Clear generate counter when switching back to prefill phase only if no concurrent requests remain.
+          if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
             updateFromLog(0, 0);
             generatedPacketCount = 0;
             console.log('[LM File Watcher] Switched back to prefill phase, cleared generate counter');
@@ -706,12 +701,14 @@ function startFileLogWatcher(): void {
         
         if (packetCount > 0) {
           generatedPacketCount = packetCount;
-          updateFromLog(0, packetCount);
+          updateLogGenerateOnly(packetCount);
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
         } else if (latestEventType === 'chat-end') {
-          // Ensure stats are cleared after chat-end
-          generatedPacketCount = 0;
-          updateFromLog(0, 0);
+          // Clear generated packets and stats only if no concurrent requests remain.
+          if (getActiveRequestCount() === 0) {
+            generatedPacketCount = 0;
+            updateFromLog(0, 0);
+          }
         }
       } catch (error) {
         console.error('[LM File Watcher] Error reading log file:', (error as Error).message);

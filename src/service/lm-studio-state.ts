@@ -148,6 +148,28 @@ function updateLogState(
   logState = { ...logState, ...newLog };
 }
 
+/** Update only prefill progress for logState, preserving generateTokens and lastGenerateAt. */
+function _updateLogPrefillOnly(prefillProgress: number): void {
+  const now = Date.now();
+  logState = {
+    ...logState,
+    prefillProgress,
+    lastPrefillAt: now,
+    lastUpdateAt: now,
+  };
+}
+
+/** Update only generate tokens for logState, preserving prefillProgress and lastPrefillAt. */
+function _updateLogGenerateOnly(generateTokens: number): void {
+  const now = Date.now();
+  logState = {
+    ...logState,
+    generateTokens,
+    lastGenerateAt: now,
+    lastUpdateAt: now,
+  };
+}
+
 function merge(): LmStudioRunState {
   return {
     state: inferState(
@@ -215,6 +237,50 @@ export function updateFromProxy(
   updateProxyState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond);
 }
 
+/** Update only generate tokens and tokens per second for SSE-based proxy, preserving prefillProgress. */
+export function updateGenerateOnlyFromProxy(
+  generateTokens: number,
+  tokensPerSecond?: number,
+): void {
+  const now = Date.now();
+  const newProxy: Partial<ProxyState> = {
+    generateTokens,
+    lastGenerateAt: now,
+    lastUpdateAt: now,
+  };
+  if (tokensPerSecond !== undefined) {
+    newProxy.tokensPerSecond = tokensPerSecond;
+    newProxy.lastTpsAt = now;
+    newProxy.tpsSource = 'proxy';
+  }
+  proxyState = { ...proxyState, ...newProxy };
+}
+
+/** Update only prefill progress for SSE-based proxy, preserving generateTokens. */
+export function updatePrefillOnlyFromProxy(
+  prefillProgress: number,
+  tokensPerSecond?: number,
+  prefillTokensPerSecond?: number,
+): void {
+  const now = Date.now();
+  const newProxy: Partial<ProxyState> = {
+    prefillProgress,
+    lastPrefillAt: now,
+    lastUpdateAt: now,
+  };
+  if (tokensPerSecond !== undefined) {
+    newProxy.tokensPerSecond = tokensPerSecond;
+    newProxy.lastTpsAt = now;
+    newProxy.tpsSource = 'proxy';
+  }
+  if (prefillTokensPerSecond !== undefined) {
+    newProxy.prefillTokensPerSecond = prefillTokensPerSecond;
+    newProxy.lastPrefillTpsAt = now;
+    newProxy.prefillTpsSource = 'proxy';
+  }
+  proxyState = { ...proxyState, ...newProxy };
+}
+
 /** Update state from the log parser (used as a fallback for direct GUI chats). */
 export function updateFromLog(
   prefillProgress: number,
@@ -223,6 +289,16 @@ export function updateFromLog(
   prefillTokensPerSecond?: number,
 ): void {
   updateLogState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond);
+}
+
+/** Update only prefill progress from log parser, preserving generateTokens and lastGenerateAt. */
+export function updateLogPrefillOnly(prefillProgress: number): void {
+  _updateLogPrefillOnly(prefillProgress);
+}
+
+/** Update only generate tokens from log parser, preserving prefillProgress and lastPrefillAt. */
+export function updateLogGenerateOnly(generateTokens: number): void {
+  _updateLogGenerateOnly(generateTokens);
 }
 
 /**

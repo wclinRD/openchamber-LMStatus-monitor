@@ -528,27 +528,6 @@ function inferState(prefill, generate) {
     return "prefill";
   return "idle";
 }
-function updateProxyState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond) {
-  const now = Date.now();
-  const newProxy = {
-    prefillProgress,
-    lastPrefillAt: now,
-    generateTokens,
-    lastGenerateAt: now,
-    lastUpdateAt: now
-  };
-  if (tokensPerSecond !== undefined) {
-    newProxy.tokensPerSecond = tokensPerSecond;
-    newProxy.lastTpsAt = now;
-    newProxy.tpsSource = "proxy";
-  }
-  if (prefillTokensPerSecond !== undefined) {
-    newProxy.prefillTokensPerSecond = prefillTokensPerSecond;
-    newProxy.lastPrefillTpsAt = now;
-    newProxy.prefillTpsSource = "proxy";
-  }
-  proxyState = { ...proxyState, ...newProxy };
-}
 function updateLogState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond) {
   const now = Date.now();
   const newLog = {
@@ -569,6 +548,24 @@ function updateLogState(prefillProgress, generateTokens, tokensPerSecond, prefil
     newLog.prefillTpsSource = "log_parser";
   }
   logState = { ...logState, ...newLog };
+}
+function _updateLogPrefillOnly(prefillProgress) {
+  const now = Date.now();
+  logState = {
+    ...logState,
+    prefillProgress,
+    lastPrefillAt: now,
+    lastUpdateAt: now
+  };
+}
+function _updateLogGenerateOnly(generateTokens) {
+  const now = Date.now();
+  logState = {
+    ...logState,
+    generateTokens,
+    lastGenerateAt: now,
+    lastUpdateAt: now
+  };
 }
 function merge() {
   return {
@@ -623,11 +620,28 @@ function merge() {
     })()
   };
 }
-function updateFromProxy(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond) {
-  updateProxyState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond);
+function updateGenerateOnlyFromProxy(generateTokens, tokensPerSecond) {
+  const now = Date.now();
+  const newProxy = {
+    generateTokens,
+    lastGenerateAt: now,
+    lastUpdateAt: now
+  };
+  if (tokensPerSecond !== undefined) {
+    newProxy.tokensPerSecond = tokensPerSecond;
+    newProxy.lastTpsAt = now;
+    newProxy.tpsSource = "proxy";
+  }
+  proxyState = { ...proxyState, ...newProxy };
 }
 function updateFromLog(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond) {
   updateLogState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond);
+}
+function updateLogPrefillOnly(prefillProgress) {
+  _updateLogPrefillOnly(prefillProgress);
+}
+function updateLogGenerateOnly(generateTokens) {
+  _updateLogGenerateOnly(generateTokens);
 }
 function resetLmStudioRunState() {
   proxyState = { ...defaultProxyState };
@@ -701,11 +715,6 @@ async function isLmStudioModel(modelId) {
   } catch {
     return false;
   }
-}
-function updatePrefillProgress(progress) {
-  if (progress < 0 || progress > 1)
-    return;
-  updateFromProxy(Math.round(progress * 1000) / 10, 0);
 }
 async function proxyChatRequest(req, res, body) {
   const reqId = randomUUID();
@@ -830,8 +839,6 @@ async function proxyChatRequest(req, res, body) {
                 data = line.slice(6).trim();
             }
             if (eventType === "chat.start") {
-              resetLmStudioRunState();
-              setChatStartAt();
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.state = "prefill";
@@ -850,8 +857,8 @@ async function proxyChatRequest(req, res, body) {
               try {
                 const parsed = JSON.parse(data);
                 if (typeof parsed.progress === "number") {
-                  updatePrefillProgress(parsed.progress);
                   const pp = Math.round(parsed.progress * 1000) / 10;
+                  updateLogPrefillOnly(pp);
                   const ar = activeRequests.get(reqId);
                   if (ar) {
                     ar.state = "prefill";
@@ -874,12 +881,10 @@ async function proxyChatRequest(req, res, body) {
               }
               lastGenerateTokens = currentGenerateTokens;
               lastGenerateAt = now2;
-              updateFromProxy(100, currentGenerateTokens, instantTps);
-              const state = getLmStudioRunStatePlain();
+              updateGenerateOnlyFromProxy(currentGenerateTokens, instantTps);
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.state = "generate";
-                ar.prefillProgress = 100;
                 ar.generateTokens = currentGenerateTokens;
                 ar.tokensPerSecond = instantTps ?? 0;
                 ar.lastGenTokens = currentGenerateTokens;
@@ -910,17 +915,16 @@ async function proxyChatRequest(req, res, body) {
                 let finalTokens = currentGenerateTokens;
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
                   finalTokens = parsed.result.stats.total_output_tokens;
-                  updateFromProxy(100, finalTokens);
+                  updateGenerateOnlyFromProxy(finalTokens);
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=${finalTokens}`);
                 } else {
-                  updateFromProxy(100, currentGenerateTokens);
+                  updateGenerateOnlyFromProxy(currentGenerateTokens);
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
                 }
                 const state = getLmStudioRunStatePlain();
                 const ar = activeRequests.get(reqId);
                 if (ar) {
                   ar.state = "generate";
-                  ar.prefillProgress = 100;
                   ar.generateTokens = finalTokens;
                   ar.tokensPerSecond = state.tokensPerSecond ?? 0;
                 }
@@ -933,9 +937,17 @@ async function proxyChatRequest(req, res, body) {
 `);
                 setTimeout(() => {
                   activeRequests.delete(reqId);
+                  if (activeRequests.size === 0) {
+                    resetLmStudioRunState();
+                    setChatStartAt();
+                  }
                 }, 2000);
               } catch {
                 activeRequests.delete(reqId);
+                if (activeRequests.size === 0) {
+                  resetLmStudioRunState();
+                  setChatStartAt();
+                }
               }
             } else if (eventType === "prompt_processing.end") {
               const ar = activeRequests.get(reqId);
@@ -947,7 +959,6 @@ async function proxyChatRequest(req, res, body) {
             } else if (eventType === "chat.end") {
               const ar = activeRequests.get(reqId);
               if (ar) {
-                ar.prefillProgress = 100;
                 ar.state = "generate";
               }
             }
@@ -966,6 +977,58 @@ async function proxyChatRequest(req, res, body) {
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "proxy-failed" }));
   }
+}
+function getAggregateRunStateFromActiveRequests() {
+  const arr = getActiveRequests();
+  if (arr.length === 0) {
+    return getLmStudioRunState();
+  }
+  let maxPrefill = 0;
+  let sumGenerate = 0;
+  let sumTps = 0;
+  let maxPrefillTps = 0;
+  let state = "idle";
+  let chatStartAt = 0;
+  let lastUpdateAt = 0;
+  for (const r of arr) {
+    if (r.state === "prefill") {
+      if (r.prefillProgress > maxPrefill)
+        maxPrefill = r.prefillProgress;
+      if (r.prefillTokensPerSecond && r.prefillTokensPerSecond > 0) {
+        if (r.prefillTokensPerSecond > maxPrefillTps)
+          maxPrefillTps = r.prefillTokensPerSecond;
+      }
+    } else if (r.state === "generate") {
+      sumGenerate += r.generateTokens;
+      if (r.tokensPerSecond && r.tokensPerSecond > 0)
+        sumTps += r.tokensPerSecond;
+      if (r.lastGenAt && r.lastGenAt > lastUpdateAt)
+        lastUpdateAt = r.lastGenAt;
+      state = "generate";
+    } else if (r.state === "idle" && state !== "generate") {
+      if (r.lastGenAt && r.lastGenAt > lastUpdateAt)
+        lastUpdateAt = r.lastGenAt;
+    }
+    if (r.startedAt && r.startedAt > chatStartAt)
+      chatStartAt = r.startedAt;
+  }
+  const globalState = getLmStudioRunState();
+  const hasPrefill = arr.some((r) => r.state === "prefill");
+  const finalPrefillProgress = hasPrefill ? Math.max(maxPrefill, globalState.prefillProgress) : maxPrefill;
+  const finalPrefillTps = hasPrefill ? globalState.prefillTokensPerSecond ?? maxPrefillTps : maxPrefillTps;
+  return {
+    state,
+    prefillProgress: finalPrefillProgress,
+    generateTokens: sumGenerate,
+    tokensPerSecond: sumTps > 0 ? sumTps : undefined,
+    prefillTokensPerSecond: finalPrefillTps > 0 ? finalPrefillTps : undefined,
+    lastUpdateAt,
+    chatStartAt,
+    prefillSource: hasPrefill ? globalState.prefillSource : "proxy",
+    generateSource: "proxy",
+    tpsSource: sumTps > 0 ? "proxy" : undefined,
+    prefillTpsSource: finalPrefillTps > 0 ? globalState.prefillTpsSource ?? "proxy" : undefined
+  };
 }
 
 // src/service/lm-studio-log-parser.ts
@@ -1001,14 +1064,16 @@ function setWatcherState(state) {
 function updatePrefillProgressFromLog(progress) {
   if (progress < 0 || progress > 100)
     return;
-  updateFromLog(progress, 0);
+  updateLogPrefillOnly(progress);
   lastLogUpdateAt = Date.now();
 }
 function resetLmStudioStats() {
-  resetLmStudioRunState();
+  if (getActiveRequestCount() === 0) {
+    resetLmStudioRunState();
+    setChatStartAt();
+  }
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
-  setChatStartAt();
   prefillTokensPerSecond = 0;
 }
 function parseLogLine(line) {
@@ -1016,7 +1081,7 @@ function parseLogLine(line) {
   if (prefillMatch?.[1]) {
     const progress = parseFloat(prefillMatch[1]);
     if (!isNaN(progress)) {
-      if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+      if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
         updateFromLog(0, 0);
         generatedPacketCount = 0;
         console.log("[LM Log Parser] Switched back to prefill phase via plain text log, cleared generate counter");
@@ -1037,12 +1102,8 @@ function parseLogLine(line) {
     };
   }
   if (line.includes("Generated packet") || line.includes("llm.prediction.output")) {
-    if (getLmStudioRunState().prefillProgress > 0) {
-      updateFromLog(0, 0);
-      console.log("[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress");
-    }
     generatedPacketCount++;
-    updateFromLog(0, generatedPacketCount);
+    updateLogGenerateOnly(generatedPacketCount);
     lastLogUpdateAt = Date.now();
     return {
       timestamp: new Date,
@@ -1097,12 +1158,14 @@ function startFileLogWatcher() {
           }
         }
         if (latestEventType === "chat-end") {
-          resetLmStudioStats();
-          console.log("[LM File Watcher] chat-end detected, cleared all stats");
+          if (getActiveRequestCount() === 0) {
+            resetLmStudioStats();
+          }
+          console.log("[LM File Watcher] chat-end detected");
         } else if (latestEventType === "prefill-progress") {
           updatePrefillProgressFromLog(latestPrefillProgress);
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
-          if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+          if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
             updateFromLog(0, 0);
             generatedPacketCount = 0;
             console.log("[LM File Watcher] Switched back to prefill phase, cleared generate counter");
@@ -1120,11 +1183,13 @@ function startFileLogWatcher() {
         }
         if (packetCount > 0) {
           generatedPacketCount = packetCount;
-          updateFromLog(0, packetCount);
+          updateLogGenerateOnly(packetCount);
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
         } else if (latestEventType === "chat-end") {
-          generatedPacketCount = 0;
-          updateFromLog(0, 0);
+          if (getActiveRequestCount() === 0) {
+            generatedPacketCount = 0;
+            updateFromLog(0, 0);
+          }
         }
       } catch (error) {
         console.error("[LM File Watcher] Error reading log file:", error.message);
@@ -1343,7 +1408,8 @@ class Sampler {
       }
     }
     const lmStudioBase = await fetchLmStudioStatus();
-    const runState = getLmStudioRunState();
+    const requestCount = getActiveRequestCount();
+    const runState = requestCount > 1 ? getAggregateRunStateFromActiveRequests() : getLmStudioRunState();
     let computedTps = undefined;
     if (runState.generateTokens > 0) {
       const startAt = runState.chatStartAt > 0 ? runState.chatStartAt : runState.lastUpdateAt;
