@@ -39,9 +39,16 @@ function computeTokensPerSecond(generateTokens: number, state: LmStudioRunState)
 }
 
 function writeState(input: Partial<LmStudioRunState>): LmStudioRunState {
+  // Omit undefined values so we don't accidentally overwrite existing fields.
+  const safeInput: Partial<LmStudioRunState> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) {
+      safeInput[key as keyof LmStudioRunState] = value;
+    }
+  }
   state = {
     ...state,
-    ...input,
+    ...safeInput,
     state: inferState(
       input.prefillProgress ?? state.prefillProgress,
       input.generateTokens ?? state.generateTokens,
@@ -95,7 +102,7 @@ export function resetLmStudioRunState(): void {
  * Set the chat start time when a new request begins.
  */
 export function setChatStartAt(): void {
-  state = { ...state, chatStartAt: Date.now(), state: 'prefill' };
+  state = { ...state, chatStartAt: Date.now(), lastUpdateAt: Date.now(), state: 'prefill' };
 }
 
 /** Read the unified state. */
