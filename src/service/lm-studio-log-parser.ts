@@ -5,7 +5,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { updateFromLog, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
+import { updateFromLog, updatePrefillTokensPerSecond, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
 
 interface LmLogEntry {
   timestamp: Date;
@@ -304,9 +304,11 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
           const tps = parseFloat(prefillTpsMatch[1]);
           if (!isNaN(tps) && tps > 0) {
             prefillTokensPerSecond = tps;
+            updatePrefillTokensPerSecond(tps);
           }
         } else if (content.includes('Prompt processing complete')) {
           prefillTokensPerSecond = 0;
+          updatePrefillTokensPerSecond(0);
         } else if (content.match(/Processed .* tokens in .* seconds/i)) {
           const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
           const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
@@ -315,6 +317,7 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
             const seconds = parseFloat(timeMatch[1]);
             if (tokens > 0 && seconds > 0) {
               prefillTokensPerSecond = tokens / seconds;
+              updatePrefillTokensPerSecond(tokens / seconds);
             }
           }
         } else if (

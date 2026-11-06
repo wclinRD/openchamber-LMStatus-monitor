@@ -91,6 +91,14 @@ export function updateFromLog(
 }
 
 /**
+ * Update prefill tokens per second from log-based parsing (fallback for direct GUI chats).
+ */
+export function updatePrefillTokensPerSecond(prefillTokensPerSecond: number): void {
+  if (prefillTokensPerSecond <= 0) return;
+  writeState({ prefillTokensPerSecond, source: 'log_parser' });
+}
+
+/**
  * Reset state when a new request begins (called on chat.start).
  * Clears everything and returns to idle/rest-api baseline.
  */
