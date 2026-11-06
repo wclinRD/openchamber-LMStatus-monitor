@@ -5,6 +5,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { updateFromLog, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
 
 interface LmLogEntry {
   timestamp: Date;
@@ -24,8 +25,6 @@ export interface LmLogStats {
   chatEndEvents: number;
 }
 
-let currentPrefillProgress: number = 0;
-let currentGenerateTokens: number = 0;
 let generatedPacketCount: number = 0;
 let logWatcher: ChildProcess | null = null;
 /** Timestamp of last time we updated prefill/generate from logs */
@@ -33,10 +32,6 @@ let lastLogUpdateAt = 0;
 let fileWatcher: NodeJS.Timeout | null = null;
 let lastLogFilePosition = 0;
 let lastLogFilePath: string | null = null;
-let generateStartAt = 0;
-let lastGenerateTokens = 0;
-let lastGenerateAt = 0;
-let tokensPerSecond = 0;
 let prefillTokensPerSecond = 0;
 
 /** Log event statistics */
@@ -200,7 +195,7 @@ function execFileSync(file: string, args: string[], options: { timeout: number }
  */
 export function updatePrefillProgressFromLog(progress: number): void {
   if (progress < 0 || progress > 100) return;
-  currentPrefillProgress = progress;
+  updateFromLog(progress, 0);
   lastLogUpdateAt = Date.now();
 }
 
@@ -209,41 +204,18 @@ export function updatePrefillProgressFromLog(progress: number): void {
  */
 export function updateGenerateTokensFromLog(tokens: number): void {
   if (tokens < 0) return;
-  const now = Date.now();
-  if (generateStartAt === 0 && tokens > 0) {
-    generateStartAt = now;
-    lastGenerateTokens = 0;
-    lastGenerateAt = now;
-    tokensPerSecond = 0;
-  }
-  if (tokens > currentGenerateTokens) {
-    if (lastGenerateAt > 0) {
-      const deltaTime = (now - lastGenerateAt) / 1000;
-      const deltaTokens = tokens - lastGenerateTokens;
-      if (deltaTime > 0 && deltaTokens > 0) {
-        const instant = deltaTokens / deltaTime;
-        tokensPerSecond = tokensPerSecond === 0 ? instant : tokensPerSecond * 0.7 + instant * 0.3;
-      }
-    }
-    lastGenerateTokens = tokens;
-    lastGenerateAt = now;
-  }
-  currentGenerateTokens = Math.max(0, tokens);
-  lastLogUpdateAt = now;
+  updateFromLog(0, tokens);
+  lastLogUpdateAt = Date.now();
 }
 
 /**
  * Resets the prefill progress and generate tokens when generation completes or becomes idle.
  */
 export function resetLmStudioStats(): void {
-  currentPrefillProgress = 0;
-  currentGenerateTokens = 0;
+  resetLmStudioRunState();
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
-  generateStartAt = 0;
-  lastGenerateTokens = 0;
-  lastGenerateAt = 0;
-  tokensPerSecond = 0;
+  setChatStartAt();
   prefillTokensPerSecond = 0;
 }
 
@@ -251,36 +223,28 @@ export function resetLmStudioStats(): void {
  * Gets the current prefill progress.
  */
 export function getPrefillProgress(): number {
-  return currentPrefillProgress;
+  return getLmStudioRunState().prefillProgress;
 }
 
 /**
  * Gets the current generate tokens.
  */
 export function getGenerateTokens(): number {
-  return currentGenerateTokens;
+  return getLmStudioRunState().generateTokens;
 }
 
 /**
  * Gets tokens per second from log parser.
  */
 export function getTokensPerSecondFromLog(): number {
-  const g = global as any;
-  if (g.__lmGenTps && g.__lmGenTps > 0) {
-    return g.__lmGenTps;
-  }
-  return tokensPerSecond;
+  return getLmStudioRunState().tokensPerSecond ?? 0;
 }
 
 /**
  * Gets prefill tokens per second from log parser.
  */
 export function getPrefillTokensPerSecondFromLog(): number {
-  const g = global as any;
-  if (g.__lmPrefillTps && g.__lmPrefillTps > 0) {
-    return g.__lmPrefillTps;
-  }
-  return prefillTokensPerSecond;
+  return getLmStudioRunState().prefillTokensPerSecond ?? 0;
 }
 
 /**
@@ -328,43 +292,44 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
         const progress = parseFloat(prefillMatch[1]);
         if (!isNaN(progress) && progress >= 0 && progress <= 100) {
           eventType = 'prefill-progress';
-          if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
-            currentGenerateTokens = 0;
+          if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+            updateFromLog(0, 0);
             generatedPacketCount = 0;
             console.log('[LM Log Parser] Switched back to prefill phase, cleared generate counter');
           }
         }
-      }
-      const prefillTpsMatch = content.match(/(?:prompt|prefill).*?([\d.]+)\s*tokens?\/s/i) || content.match(/([\d.]+)\s*tokens?\/s.*?(?:prompt|prefill)/i) || content.match(/Prompt eval rate.*?([\d.]+)/i);
-      if (prefillTpsMatch?.[1]) {
-        const tps = parseFloat(prefillTpsMatch[1]);
-        if (!isNaN(tps) && tps > 0) {
-          prefillTokensPerSecond = tps;
-        }
-      } else if (content.includes('Prompt processing complete')) {
-        prefillTokensPerSecond = 0;
-      } else if (content.match(/Processed .* tokens in .* seconds/i)) {
-        const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
-        const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
-        if (tokensMatch?.[1] && timeMatch?.[1]) {
-          const tokens = parseFloat(tokensMatch[1]);
-          const seconds = parseFloat(timeMatch[1]);
-          if (tokens > 0 && seconds > 0) {
-            prefillTokensPerSecond = tokens / seconds;
+      } else {
+        const prefillTpsMatch = content.match(/(?:prompt|prefill).*?([\d.]+)\s*tokens?\/s/i) || content.match(/([\d.]+)\s*tokens?\/s.*?(?:prompt|prefill)/i) || content.match(/Prompt eval rate.*?([\d.]+)/i);
+        if (prefillTpsMatch?.[1]) {
+          const tps = parseFloat(prefillTpsMatch[1]);
+          if (!isNaN(tps) && tps > 0) {
+            prefillTokensPerSecond = tps;
           }
+        } else if (content.includes('Prompt processing complete')) {
+          prefillTokensPerSecond = 0;
+        } else if (content.match(/Processed .* tokens in .* seconds/i)) {
+          const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
+          const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
+          if (tokensMatch?.[1] && timeMatch?.[1]) {
+            const tokens = parseFloat(tokensMatch[1]);
+            const seconds = parseFloat(timeMatch[1]);
+            if (tokens > 0 && seconds > 0) {
+              prefillTokensPerSecond = tokens / seconds;
+            }
+          }
+        } else if (
+          content.match(/Prompt processing.*completed/i) ||
+          content.includes('chat completion') ||
+          content.includes('generation complete') ||
+          content.includes('Prompt processing complete') ||
+          content.includes('Finished streaming response')
+        ) {
+          eventType = 'chat-end';
+        } else if (content.includes('Generated packet') || content.includes('llm.prediction.output')) {
+          eventType = 'model-output';
+        } else if (level === 'info' || level === 'warning' || level === 'error' || level === 'debug') {
+          eventType = 'server-event';
         }
-      } else if (
-        content.match(/Prompt processing.*completed/i) ||
-        content.includes('chat completion') ||
-        content.includes('generation complete') ||
-        content.includes('Prompt processing complete') ||
-        content.includes('Finished streaming response')
-      ) {
-        eventType = 'chat-end';
-      } else if (content.includes('Generated packet') || content.includes('llm.prediction.output')) {
-        eventType = 'model-output';
-      } else if (level === 'info' || level === 'warning' || level === 'error' || level === 'debug') {
-        eventType = 'server-event';
       }
     }
 
@@ -389,8 +354,8 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
 
     if (eventType === 'model-output') {
       // Clear prefill progress when transitioning to generate phase
-      if (currentPrefillProgress > 0) {
-        currentPrefillProgress = 0;
+      if (getLmStudioRunState().prefillProgress > 0) {
+        updateFromLog(0, 0);
         console.log('[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress');
       }
 
@@ -507,8 +472,8 @@ export function parseLogLine(line: string): LmLogEntry | null {
     const progress = parseFloat(prefillMatch[1]);
     if (!isNaN(progress)) {
       // Clear generate counter when switching back to prefill phase
-      if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
-        currentGenerateTokens = 0;
+      if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+        updateFromLog(0, 0);
         generatedPacketCount = 0;
         console.log('[LM Log Parser] Switched back to prefill phase via plain text log, cleared generate counter');
       }
@@ -536,34 +501,15 @@ export function parseLogLine(line: string): LmLogEntry | null {
   // Check for generate phase start (Generated packet indicates model output)
   if (line.includes('Generated packet') || line.includes('llm.prediction.output')) {
     // Clear prefill progress when transitioning to generate phase
-    if (currentPrefillProgress > 0) {
-      currentPrefillProgress = 0;
+    if (getLmStudioRunState().prefillProgress > 0) {
+      updateFromLog(0, 0);
       console.log('[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress');
     }
     
     // Count generated packets in real-time
     generatedPacketCount++;
-    currentGenerateTokens = generatedPacketCount;
+    updateFromLog(0, generatedPacketCount);
     lastLogUpdateAt = Date.now();
-    const now = Date.now();
-    if ((global as any).__lmGenStartAt === undefined) {
-      (global as any).__lmGenStartAt = now;
-      (global as any).__lmLastGenTokens = 0;
-      (global as any).__lmLastGenAt = now;
-      (global as any).__lmGenTps = 0;
-    }
-    if ((global as any).__lmLastGenAt > 0) {
-      const deltaTime = (now - (global as any).__lmLastGenAt) / 1000;
-      const deltaTokens = currentGenerateTokens - (global as any).__lmLastGenTokens;
-      if (deltaTime > 0 && deltaTokens > 0) {
-        const instant = deltaTokens / deltaTime;
-        const cur = (global as any).__lmGenTps || 0;
-        (global as any).__lmGenTps = cur === 0 ? instant : cur * 0.7 + instant * 0.3;
-      }
-    }
-    (global as any).__lmLastGenTokens = currentGenerateTokens;
-    (global as any).__lmLastGenAt = now;
-    console.log(`[LM Log Parser] Generated packet count: ${generatedPacketCount}`);
     
     return {
       timestamp: new Date(),
@@ -735,8 +681,8 @@ function startFileLogWatcher(): void {
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
           
           // Clear generate counter when switching back to prefill phase
-          if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
-            currentGenerateTokens = 0;
+          if (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0) {
+            updateFromLog(0, 0);
             generatedPacketCount = 0;
             console.log('[LM File Watcher] Switched back to prefill phase, cleared generate counter');
           }
@@ -757,12 +703,12 @@ function startFileLogWatcher(): void {
         
         if (packetCount > 0) {
           generatedPacketCount = packetCount;
-          currentGenerateTokens = packetCount;
+          updateFromLog(0, packetCount);
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
         } else if (latestEventType === 'chat-end') {
           // Ensure stats are cleared after chat-end
           generatedPacketCount = 0;
-          currentGenerateTokens = 0;
+          updateFromLog(0, 0);
         }
       } catch (error) {
         console.error('[LM File Watcher] Error reading log file:', (error as Error).message);
@@ -818,7 +764,8 @@ function getLatestLogFile(logDir: string): string | null {
       .filter((f): f is { path: string; mtimeMs: number } => f !== null);
     if (entries.length === 0) return null;
     entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return entries[0].path;
+    const first = entries[0];
+    return first ? first.path : null;
   } catch {
     return null;
   }

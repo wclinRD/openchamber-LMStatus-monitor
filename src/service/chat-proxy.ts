@@ -6,6 +6,7 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { fetchLmStudioStatus } from './lmstudio.ts';
 import { pushLmStudioEvent } from './lm-studio-events.ts';
+import { updateFromProxy, resetLmStudioRunState, setChatStartAt, getLmStudioRunStatePlain, getLmStudioRunState } from './lm-studio-state.ts';
 
 const LM_STUDIO_HOST = "127.0.0.1";
 const LM_STUDIO_PORT = 1234;
@@ -29,13 +30,6 @@ interface LmModelInfo {
   type: string;
   max_context_length?: number;
 }
-
-let currentPrefillProgress: number = 0;
-let currentGenerateTokens: number = 0;
-let generateStartAt = 0;
-let lastGenerateTokens = 0;
-let lastGenerateAt = 0;
-let tokensPerSecond = 0;
 
 interface ActiveRequest {
   id: string;
@@ -105,7 +99,7 @@ async function isLmStudioModel(modelId: string): Promise<boolean> {
  */
 export function updatePrefillProgress(progress: number): void {
   if (progress < 0 || progress > 1) return;
-  currentPrefillProgress = progress * 100;
+  updateFromProxy(Math.round(progress * 100), 0);
 }
 
 /**
@@ -113,7 +107,7 @@ export function updatePrefillProgress(progress: number): void {
  */
 export function updateGenerateTokens(totalOutputTokens: number | null): void {
   if (totalOutputTokens === null || totalOutputTokens < 0) return;
-  currentGenerateTokens = Math.max(0, totalOutputTokens);
+  updateFromProxy(100, Math.max(0, totalOutputTokens));
 }
 
 /**
@@ -235,6 +229,9 @@ export async function proxyChatRequest(
 
     const processEvents = async () => {
       try {
+        let currentGenerateTokens = 0;
+        let lastGenerateTokens = 0;
+        let lastGenerateAt = 0;
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -256,12 +253,8 @@ export async function proxyChatRequest(
             }
 
             if (eventType === "chat.start") {
-              currentGenerateTokens = 0;
-              currentPrefillProgress = 0;
-              generateStartAt = Date.now();
-              lastGenerateTokens = 0;
-              lastGenerateAt = generateStartAt;
-              tokensPerSecond = 0;
+              resetLmStudioRunState();
+              setChatStartAt();
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.state = 'prefill';
@@ -293,32 +286,27 @@ export async function proxyChatRequest(
                 }
               } catch {}
             } else if (eventType === "message.delta" && data) {
-              currentGenerateTokens += 1;
               const now = Date.now();
+              currentGenerateTokens += 1;
+              let instantTps: number | undefined = undefined;
               if (lastGenerateAt > 0) {
                 const deltaTime = (now - lastGenerateAt) / 1000;
                 const deltaTokens = currentGenerateTokens - lastGenerateTokens;
                 if (deltaTime > 0 && deltaTokens > 0) {
-                  const instant = deltaTokens / deltaTime;
-                  tokensPerSecond = tokensPerSecond === 0 ? instant : tokensPerSecond * 0.7 + instant * 0.3;
+                  instantTps = deltaTokens / deltaTime;
                 }
               }
               lastGenerateTokens = currentGenerateTokens;
               lastGenerateAt = now;
+              updateFromProxy(100, currentGenerateTokens, instantTps);
+              const state = getLmStudioRunStatePlain();
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.state = 'generate';
                 ar.prefillProgress = 100;
                 ar.generateTokens = currentGenerateTokens;
-                if (ar.lastGenAt > 0) {
-                  const deltaTime = (now - ar.lastGenAt) / 1000;
-                  const deltaTokens = ar.generateTokens - ar.lastGenTokens;
-                  if (deltaTime > 0 && deltaTokens > 0) {
-                    const instant = deltaTokens / deltaTime;
-                    ar.tokensPerSecond = ar.tokensPerSecond === 0 ? instant : ar.tokensPerSecond * 0.7 + instant * 0.3;
-                  }
-                }
-                ar.lastGenTokens = ar.generateTokens;
+                ar.tokensPerSecond = instantTps ?? 0;
+                ar.lastGenTokens = currentGenerateTokens;
                 ar.lastGenAt = now;
               }
               try {
@@ -342,49 +330,24 @@ export async function proxyChatRequest(
             } else if (eventType === "chat.end" && data) {
               try {
                 const parsed = JSON.parse(data) as { result?: { stats?: { total_output_tokens?: number } } };
+                let finalTokens = currentGenerateTokens;
                 if (parsed.result?.stats?.total_output_tokens !== undefined) {
-                  updateGenerateTokens(parsed.result.stats.total_output_tokens);
-                  currentGenerateTokens = parsed.result.stats.total_output_tokens;
-                  if (generateStartAt > 0) {
-                    const elapsed = (Date.now() - generateStartAt) / 1000;
-                    if (elapsed > 0) {
-                      tokensPerSecond = currentGenerateTokens / elapsed;
-                    }
-                  }
-                  const ar = activeRequests.get(reqId);
-                  if (ar) {
-                    ar.state = 'generate';
-                    ar.prefillProgress = 100;
-                    ar.generateTokens = currentGenerateTokens;
-                    if (ar.genStartAt > 0) {
-                      const elapsed = (Date.now() - ar.genStartAt) / 1000;
-                      if (elapsed > 0) {
-                        ar.tokensPerSecond = ar.generateTokens / elapsed;
-                      }
-                    }
-                  }
-                  console.log(`[LM Stat Log] chat_end: total_output_tokens=${parsed.result.stats.total_output_tokens}`);
-                  pushLmStudioEvent({ type: 'chat-end', generateTokens: currentGenerateTokens });
+                  finalTokens = parsed.result.stats.total_output_tokens;
+                  updateFromProxy(100, finalTokens);
+                  console.log(`[LM Stat Log] chat_end: total_output_tokens=${finalTokens}`);
                 } else {
-                  if (generateStartAt > 0 && currentGenerateTokens > 0) {
-                    const elapsed = (Date.now() - generateStartAt) / 1000;
-                    if (elapsed > 0) {
-                      tokensPerSecond = currentGenerateTokens / elapsed;
-                    }
-                  }
-                  const ar = activeRequests.get(reqId);
-                  if (ar && ar.genStartAt > 0 && currentGenerateTokens > 0) {
-                    const elapsed = (Date.now() - ar.genStartAt) / 1000;
-                    if (elapsed > 0) {
-                      ar.tokensPerSecond = currentGenerateTokens / elapsed;
-                    }
-                    ar.generateTokens = currentGenerateTokens;
-                    ar.prefillProgress = 100;
-                    ar.state = 'generate';
-                  }
+                  updateFromProxy(100, currentGenerateTokens);
                   console.log(`[LM Stat Log] chat_end: total_output_tokens=unknown`);
-                  pushLmStudioEvent({ type: 'chat-end', generateTokens: currentGenerateTokens });
                 }
+                const state = getLmStudioRunStatePlain();
+                const ar = activeRequests.get(reqId);
+                if (ar) {
+                  ar.state = 'generate';
+                  ar.prefillProgress = 100;
+                  ar.generateTokens = finalTokens;
+                  ar.tokensPerSecond = state.tokensPerSecond ?? 0;
+                }
+                pushLmStudioEvent({ type: 'chat-end', generateTokens: finalTokens });
                 // Send final chunk with finish_reason
                 res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
                 res.write(`data: [DONE]\n\n`);
@@ -395,7 +358,6 @@ export async function proxyChatRequest(
                 activeRequests.delete(reqId);
               }
             } else if (eventType === "prompt_processing.end") {
-              currentPrefillProgress = 0;
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.prefillProgress = 100;
@@ -403,7 +365,6 @@ export async function proxyChatRequest(
               }
               console.log("[LM Stat Log] prompt_processing_end: prefill completed");
             } else if (eventType === "chat.end") {
-              currentPrefillProgress = 0;
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.prefillProgress = 100;
@@ -432,19 +393,19 @@ export async function proxyChatRequest(
  * Gets the current prefill progress.
  */
 export function getPrefillProgress(): number {
-  return currentPrefillProgress;
+  return getLmStudioRunState().prefillProgress;
 }
 
 /**
  * Gets the current generate tokens.
  */
 export function getGenerateTokens(): number {
-  return currentGenerateTokens;
+  return getLmStudioRunState().generateTokens;
 }
 
 /**
  * Gets tokens per second for current generation.
  */
 export function getTokensPerSecond(): number {
-  return tokensPerSecond;
+  return getLmStudioRunState().tokensPerSecond ?? 0;
 }

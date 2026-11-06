@@ -9,8 +9,9 @@ import { planStop, type StopTarget } from './stop.ts';
 import { buildTreeView, collectTree, isOpenCodeName, type TreeView } from './tree.ts';
 import { HISTORY_POINTS, type LmStudioStatus, type Percent, type Snapshot, type SystemStats, type Warning } from '../shared/snapshot.ts';
 import { fetchLmStudioStatus } from './lmstudio.ts';
-import { getPrefillProgress, getGenerateTokens, getTokensPerSecond, getActiveRequests, getActiveRequestCount } from './chat-proxy.ts';
-import { getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogStats, hasRecentLogActivity, getTokensPerSecondFromLog, getPrefillTokensPerSecondFromLog } from './lm-studio-log-parser.ts';
+import { getActiveRequests, getActiveRequestCount } from './chat-proxy.ts';
+import { getLogStats } from './lm-studio-log-parser.ts';
+import { getLmStudioRunState } from './lm-studio-state.ts';
 
 export const SAMPLE_INTERVAL_MS = 2_000;
 /** Listening ports change rarely and cost the most to read, so every other sample. */
@@ -209,45 +210,31 @@ export class Sampler {
     }
 
     const lmStudioBase = await fetchLmStudioStatus();
-    // Prefer log parser data for live status when it's actively updating (e.g. LM Studio GUI)
-    // Avoid falling back to stale chat-proxy values from a previous proxied request
-    const logPrefill = getPrefillProgressFromLog();
-    const logGenerate = getGenerateTokensFromLog();
-    const proxyPrefill = getPrefillProgress();
-    const proxyGenerate = getGenerateTokens();
-    const logActive = hasRecentLogActivity(15000);
+    const runState = getLmStudioRunState();
 
-    let prefillProgress = lmStudioBase.prefillProgress;
-    if (logActive) {
-      prefillProgress = logPrefill;
-    } else if (logPrefill > 0) {
-      prefillProgress = logPrefill;
-    } else if (proxyPrefill > 0) {
-      prefillProgress = proxyPrefill;
+    // Derive TPS from the run state: total tokens divided by elapsed time since chat start
+    let computedTps: number | undefined = undefined;
+    if (runState.generateTokens > 0) {
+      const startAt = runState.chatStartAt > 0 ? runState.chatStartAt : runState.lastUpdateAt;
+      if (startAt > 0) {
+        const elapsed = (Date.now() - startAt) / 1000;
+        if (elapsed > 0) {
+          computedTps = runState.generateTokens / elapsed;
+        }
+      }
     }
 
-    let generateTokens = lmStudioBase.generateTokens;
-    if (logActive && logGenerate > 0) {
-      generateTokens = logGenerate;
-    } else if (logGenerate > 0) {
-      generateTokens = logGenerate;
-    } else if (proxyGenerate > 0) {
-      generateTokens = proxyGenerate;
-    } else if (logActive && logGenerate === 0 && prefillProgress === 0) {
-      // Log parser is active but idle/completed, don't reuse stale proxy values
-      generateTokens = 0;
-    }
-    
     const parallel = lmStudioBase.models?.find((m: any) => m.id === lmStudioBase.modelName)?.parallel 
       || lmStudioBase.models?.find((m: any) => m.loadedInstances?.length)?.parallel
       || (lmStudioBase.models?.find((m: any) => m.loadedInstances?.[0]?.config?.parallel) ? lmStudioBase.models.find((m: any) => m.loadedInstances?.[0]?.config?.parallel)!.loadedInstances![0].config!.parallel : undefined);
 
     const lmStudio = {
       ...lmStudioBase,
-      prefillProgress,
-      generateTokens,
-      tokensPerSecond: getTokensPerSecondFromLog() > 0 ? getTokensPerSecondFromLog() : (getTokensPerSecond() > 0 ? getTokensPerSecond() : undefined),
-      prefillTokensPerSecond: getPrefillTokensPerSecondFromLog() > 0 ? getPrefillTokensPerSecondFromLog() : undefined,
+      prefillProgress: runState.prefillProgress,
+      generateTokens: runState.generateTokens,
+      tokensPerSecond: computedTps ?? runState.tokensPerSecond,
+      prefillTokensPerSecond: runState.prefillTokensPerSecond,
+      state: runState.state === 'idle' ? (lmStudioBase.state as any) : runState.state,
       logStats: getLogStats(),
       requests: getActiveRequests(),
       parallel,
