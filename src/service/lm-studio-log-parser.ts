@@ -5,7 +5,16 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { updateFromLog, updateLogPrefillOnly, updateLogGenerateOnly, updatePrefillTokensPerSecond, resetLmStudioRunState, setChatStartAt, getLmStudioRunState, getLmStudioRunStatePlain } from './lm-studio-state.ts';
+import {
+  updateRequestStateFromLog,
+  updateRequestLogPrefillOnly,
+  updateRequestLogGenerateOnly,
+  updatePrefillTokensPerSecond,
+  resetAllRequestStates,
+  setChatStartAtForRequest,
+  getLmStudioRunState,
+  getLmStudioRunStatePlain,
+} from './lm-studio-state.ts';
 import { getActiveRequestCount } from './chat-proxy.ts';
 import type { LmStudioRunState } from './lm-studio-state.ts';
 
@@ -193,20 +202,20 @@ function execFileSync(file: string, args: string[], options: { timeout: number }
 }
 
 /**
- * Updates the prefill progress from a log entry.
+ * Updates the prefill progress from a log entry (global fallback for direct GUI).
  */
 export function updatePrefillProgressFromLog(progress: number): void {
   if (progress < 0 || progress > 100) return;
-  updateLogPrefillOnly(progress);
+  updateRequestLogPrefillOnly('global-fallback', progress);
   lastLogUpdateAt = Date.now();
 }
 
 /**
- * Updates generate tokens from a log entry.
+ * Updates generate tokens from a log entry (global fallback for direct GUI).
  */
 export function updateGenerateTokensFromLog(tokens: number): void {
   if (tokens < 0) return;
-  updateLogGenerateOnly(tokens);
+  updateRequestLogGenerateOnly('global-fallback', tokens);
   lastLogUpdateAt = Date.now();
 }
 
@@ -216,8 +225,8 @@ export function updateGenerateTokensFromLog(tokens: number): void {
  */
 export function resetLmStudioStats(): void {
   if (getActiveRequestCount() === 0) {
-    resetLmStudioRunState();
-    setChatStartAt();
+    resetAllRequestStates();
+    setChatStartAtForRequest('global-fallback');
   }
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
@@ -298,7 +307,7 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
         if (!isNaN(progress) && progress >= 0 && progress <= 100) {
           eventType = 'prefill-progress';
           if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
-            updateFromLog(0, 0);
+            updateRequestStateFromLog('global-fallback', 0, 0);
             generatedPacketCount = 0;
             console.log('[LM Log Parser] Switched back to prefill phase, cleared generate counter');
           }
@@ -475,7 +484,7 @@ export function parseLogLine(line: string): LmLogEntry | null {
     if (!isNaN(progress)) {
       // Clear generate counter when switching back to prefill phase only if no concurrent requests remain.
       if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
-        updateFromLog(0, 0);
+        updateRequestStateFromLog('global-fallback', 0, 0);
         generatedPacketCount = 0;
         console.log('[LM Log Parser] Switched back to prefill phase via plain text log, cleared generate counter');
       }
@@ -504,7 +513,7 @@ export function parseLogLine(line: string): LmLogEntry | null {
   if (line.includes('Generated packet') || line.includes('llm.prediction.output')) {
     // Count generated packets in real-time
     generatedPacketCount++;
-    updateLogGenerateOnly(generatedPacketCount);
+    updateRequestLogGenerateOnly('global-fallback', generatedPacketCount);
     lastLogUpdateAt = Date.now();
     
     return {
@@ -680,7 +689,7 @@ function startFileLogWatcher(): void {
           
           // Clear generate counter when switching back to prefill phase only if no concurrent requests remain.
           if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
-            updateFromLog(0, 0);
+            updateRequestStateFromLog('global-fallback', 0, 0);
             generatedPacketCount = 0;
             console.log('[LM File Watcher] Switched back to prefill phase, cleared generate counter');
           }
@@ -701,13 +710,13 @@ function startFileLogWatcher(): void {
         
         if (packetCount > 0) {
           generatedPacketCount = packetCount;
-          updateLogGenerateOnly(packetCount);
+          updateRequestLogGenerateOnly('global-fallback', packetCount);
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
         } else if (latestEventType === 'chat-end') {
           // Clear generated packets and stats only if no concurrent requests remain.
           if (getActiveRequestCount() === 0) {
             generatedPacketCount = 0;
-            updateFromLog(0, 0);
+            updateRequestStateFromLog('global-fallback', 0, 0);
           }
         }
       } catch (error) {

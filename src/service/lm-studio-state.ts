@@ -1,8 +1,7 @@
 // Centralized state for LM Studio Prefill & Generate data.
-// This module provides a single source of truth for current request statistics,
-// updated by either chat-proxy (SSE) or lm-studio-log-parser (log-based).
-// Prefill data prefers the log parser (more real-time), while generate tokens
-// keep the current proxy (SSE) approach.
+// This module provides a per-request source of truth for concurrent inference.
+// Each request has its own state, updated by either chat-proxy (SSE) or
+// lm-studio-log-parser (log-based). Aggregation is computed from active requests.
 
 export interface LmStudioRunState {
   prefillProgress: number;
@@ -18,67 +17,38 @@ export interface LmStudioRunState {
   prefillTpsSource?: 'proxy' | 'log_parser' | 'rest_api';
 }
 
+export interface RequestState extends Omit<LmStudioRunState, 'state'> {
+  reqId: string;
+  state: 'idle' | 'prefill' | 'generate';
+  lastPrefillAt: number;
+  lastGenerateAt: number;
+  lastTpsAt?: number;
+  lastPrefillTpsAt?: number;
+}
+
 const baseDefault = {
   prefillProgress: 0,
   generateTokens: 0,
 };
 
-interface ProxyState {
-  prefillProgress: number;
-  generateTokens: number;
-  tokensPerSecond?: number;
-  prefillTokensPerSecond?: number;
-  lastUpdateAt: number;
-  chatStartAt: number;
-  lastPrefillAt: number;
-  lastGenerateAt: number;
-  lastTpsAt?: number;
-  lastPrefillTpsAt?: number;
-  prefillSource: 'proxy' | 'rest_api';
-  generateSource: 'proxy' | 'rest_api';
-  tpsSource?: 'proxy' | 'rest_api';
-  prefillTpsSource?: 'proxy' | 'rest_api';
+/** Per-request state map, keyed by request ID. */
+const requestStates = new Map<string, RequestState>();
+
+/** Create an empty request state with defaults. */
+function createEmptyRequestState(reqId: string): RequestState {
+  const now = Date.now();
+  return {
+    ...baseDefault,
+    reqId,
+    state: 'idle',
+    lastUpdateAt: now,
+    chatStartAt: now,
+    lastPrefillAt: now,
+    lastGenerateAt: now,
+    prefillSource: 'rest_api',
+    generateSource: 'rest_api',
+  };
 }
-
-interface LogState {
-  prefillProgress: number;
-  generateTokens: number;
-  tokensPerSecond?: number;
-  prefillTokensPerSecond?: number;
-  lastUpdateAt: number;
-  chatStartAt: number;
-  lastPrefillAt: number;
-  lastGenerateAt: number;
-  lastTpsAt?: number;
-  lastPrefillTpsAt?: number;
-  prefillSource: 'log_parser' | 'rest_api';
-  generateSource: 'log_parser' | 'rest_api';
-  tpsSource?: 'log_parser' | 'rest_api';
-  prefillTpsSource?: 'log_parser' | 'rest_api';
-}
-
-const defaultProxyState: ProxyState = {
-  ...baseDefault,
-  lastUpdateAt: 0,
-  chatStartAt: 0,
-  lastPrefillAt: 0,
-  lastGenerateAt: 0,
-  prefillSource: 'rest_api',
-  generateSource: 'rest_api',
-};
-
-const defaultLogState: LogState = {
-  ...baseDefault,
-  lastUpdateAt: 0,
-  chatStartAt: 0,
-  lastPrefillAt: 0,
-  lastGenerateAt: 0,
-  prefillSource: 'rest_api',
-  generateSource: 'rest_api',
-};
-
-let proxyState: ProxyState = { ...defaultProxyState };
-let logState: LogState = { ...defaultLogState };
 
 function inferState(prefill: number, generate: number): 'idle' | 'prefill' | 'generate' {
   if (generate > 0) return 'generate';
@@ -94,211 +64,161 @@ function computeTokensPerSecond(generateTokens: number, state: Pick<LmStudioRunS
   return elapsed > 0 ? generateTokens / elapsed : undefined;
 }
 
-function updateProxyState(
+/** Internal function: update a specific request's state. */
+function updateRequestStateInternal(
+  reqId: string,
   prefillProgress: number,
   generateTokens: number,
   tokensPerSecond?: number,
   prefillTokensPerSecond?: number,
+  sourceType: 'proxy' | 'log_parser' = 'proxy',
 ): void {
   const now = Date.now();
-  const newProxy: Partial<ProxyState> = {
-    prefillProgress,
-    lastPrefillAt: now,
-    generateTokens,
-    lastGenerateAt: now,
-    lastUpdateAt: now,
-  };
+  const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
+  state.prefillProgress = prefillProgress;
+  state.lastPrefillAt = now;
+  state.generateTokens = generateTokens;
+  state.lastGenerateAt = now;
+  state.lastUpdateAt = now;
+  state.state = inferState(prefillProgress, generateTokens);
+
   if (tokensPerSecond !== undefined) {
-    newProxy.tokensPerSecond = tokensPerSecond;
-    newProxy.lastTpsAt = now;
-    newProxy.tpsSource = 'proxy';
+    state.tokensPerSecond = tokensPerSecond;
+    state.lastTpsAt = now;
+    state.tpsSource = sourceType;
   }
   if (prefillTokensPerSecond !== undefined) {
-    newProxy.prefillTokensPerSecond = prefillTokensPerSecond;
-    newProxy.lastPrefillTpsAt = now;
-    newProxy.prefillTpsSource = 'proxy';
+    state.prefillTokensPerSecond = prefillTokensPerSecond;
+    state.lastPrefillTpsAt = now;
+    state.prefillTpsSource = sourceType;
   }
-  proxyState = { ...proxyState, ...newProxy };
+  state.prefillSource = sourceType;
+  state.generateSource = sourceType;
+  requestStates.set(reqId, state);
 }
 
-function updateLogState(
+/** Internal: update only prefill progress for a specific request. */
+function updateRequestPrefillOnlyInternal(
+  reqId: string,
+  prefillProgress: number,
+): void {
+  const now = Date.now();
+  const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
+  state.prefillProgress = prefillProgress;
+  state.lastPrefillAt = now;
+  state.lastUpdateAt = now;
+  state.state = inferState(prefillProgress, state.generateTokens);
+  state.prefillSource = state.prefillSource || 'rest_api';
+  requestStates.set(reqId, state);
+}
+
+/** Internal: update only generate tokens for a specific request. */
+function updateRequestGenerateOnlyInternal(
+  reqId: string,
+  generateTokens: number,
+  tokensPerSecond?: number,
+): void {
+  const now = Date.now();
+  const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
+  state.generateTokens = generateTokens;
+  state.lastGenerateAt = now;
+  state.lastUpdateAt = now;
+  state.state = inferState(state.prefillProgress, generateTokens);
+  state.generateSource = state.generateSource || 'rest_api';
+
+  if (tokensPerSecond !== undefined) {
+    state.tokensPerSecond = tokensPerSecond;
+    state.lastTpsAt = now;
+    state.tpsSource = state.tpsSource || 'rest_api';
+  }
+  requestStates.set(reqId, state);
+}
+
+/**
+ * Update a specific request's state from a SSE-based proxy request.
+ */
+export function updateRequestStateFromProxy(
+  reqId: string,
   prefillProgress: number,
   generateTokens: number,
   tokensPerSecond?: number,
   prefillTokensPerSecond?: number,
 ): void {
+  updateRequestStateInternal(reqId, prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond, 'proxy');
+}
+
+/**
+ * Update only generate tokens and tokens per second for a specific SSE-based proxy request, preserving prefillProgress.
+ */
+export function updateRequestGenerateOnlyFromProxy(
+  reqId: string,
+  generateTokens: number,
+  tokensPerSecond?: number,
+): void {
+  updateRequestGenerateOnlyInternal(reqId, generateTokens, tokensPerSecond);
+}
+
+/**
+ * Update only prefill progress for a specific SSE-based proxy request, preserving generateTokens.
+ */
+export function updateRequestPrefillOnlyFromProxy(
+  reqId: string,
+  prefillProgress: number,
+  tokensPerSecond?: number,
+  prefillTokensPerSecond?: number,
+): void {
   const now = Date.now();
-  const newLog: Partial<LogState> = {
-    prefillProgress,
-    lastPrefillAt: now,
-    generateTokens,
-    lastGenerateAt: now,
-    lastUpdateAt: now,
-  };
+  const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
+  state.prefillProgress = prefillProgress;
+  state.lastPrefillAt = now;
+  state.lastUpdateAt = now;
+  state.state = inferState(prefillProgress, state.generateTokens);
+
   if (tokensPerSecond !== undefined) {
-    newLog.tokensPerSecond = tokensPerSecond;
-    newLog.lastTpsAt = now;
-    newLog.tpsSource = 'log_parser';
+    state.tokensPerSecond = tokensPerSecond;
+    state.lastTpsAt = now;
+    state.tpsSource = state.tpsSource || 'proxy';
   }
   if (prefillTokensPerSecond !== undefined) {
-    newLog.prefillTokensPerSecond = prefillTokensPerSecond;
-    newLog.lastPrefillTpsAt = now;
-    newLog.prefillTpsSource = 'log_parser';
+    state.prefillTokensPerSecond = prefillTokensPerSecond;
+    state.lastPrefillTpsAt = now;
+    state.prefillTpsSource = state.prefillTpsSource || 'proxy';
   }
-  logState = { ...logState, ...newLog };
+  state.prefillSource = state.prefillSource || 'proxy';
+  requestStates.set(reqId, state);
 }
 
-/** Update only prefill progress for logState, preserving generateTokens and lastGenerateAt. */
-function _updateLogPrefillOnly(prefillProgress: number): void {
-  const now = Date.now();
-  logState = {
-    ...logState,
-    prefillProgress,
-    lastPrefillAt: now,
-    lastUpdateAt: now,
-  };
-}
-
-/** Update only generate tokens for logState, preserving prefillProgress and lastPrefillAt. */
-function _updateLogGenerateOnly(generateTokens: number): void {
-  const now = Date.now();
-  logState = {
-    ...logState,
-    generateTokens,
-    lastGenerateAt: now,
-    lastUpdateAt: now,
-  };
-}
-
-function merge(): LmStudioRunState {
-  return {
-    state: inferState(
-      Math.max(logState.prefillProgress, proxyState.prefillProgress),
-      Math.max(proxyState.generateTokens, logState.generateTokens)
-    ),
-    prefillProgress: logState.lastPrefillAt > proxyState.lastPrefillAt ? logState.prefillProgress : proxyState.prefillProgress,
-    generateTokens: proxyState.lastGenerateAt > logState.lastGenerateAt ? proxyState.generateTokens : logState.generateTokens,
-    tokensPerSecond: (() => {
-      let mergedTpsSource: 'proxy' | 'log_parser' | 'rest_api' | undefined;
-      let mergedTps: number | undefined;
-      if (proxyState.lastTpsAt && proxyState.lastTpsAt > (logState.lastTpsAt ?? 0)) {
-        mergedTpsSource = proxyState.tpsSource ?? 'proxy';
-        mergedTps = proxyState.tokensPerSecond;
-      } else if (logState.lastTpsAt) {
-        mergedTpsSource = logState.tpsSource ?? 'log_parser';
-        mergedTps = logState.tokensPerSecond;
-      }
-      return { mergedTpsSource, mergedTps };
-    })().mergedTps,
-    prefillTokensPerSecond: (() => {
-      let mergedPrefillTpsSource: 'proxy' | 'log_parser' | 'rest_api' | undefined;
-      let mergedPrefillTps: number | undefined;
-      if (logState.lastPrefillTpsAt && logState.lastPrefillTpsAt > (proxyState.lastPrefillTpsAt ?? 0)) {
-        mergedPrefillTpsSource = logState.prefillTpsSource ?? 'log_parser';
-        mergedPrefillTps = logState.prefillTokensPerSecond;
-      } else if (proxyState.lastPrefillTpsAt) {
-        mergedPrefillTpsSource = proxyState.prefillTpsSource ?? 'proxy';
-        mergedPrefillTps = proxyState.prefillTokensPerSecond;
-      }
-      return { mergedPrefillTpsSource, mergedPrefillTps };
-    })().mergedPrefillTps,
-    lastUpdateAt: Math.max(proxyState.lastUpdateAt, logState.lastUpdateAt),
-    chatStartAt: Math.max(proxyState.chatStartAt, logState.chatStartAt),
-    prefillSource: logState.lastPrefillAt > proxyState.lastPrefillAt ? 'log_parser' : 'proxy',
-    generateSource: proxyState.lastGenerateAt > logState.lastGenerateAt ? 'proxy' : 'log_parser',
-    tpsSource: (() => {
-      if (proxyState.lastTpsAt && proxyState.lastTpsAt > (logState.lastTpsAt ?? 0)) {
-        return proxyState.tpsSource ?? 'proxy';
-      }
-      if (logState.lastTpsAt) {
-        return logState.tpsSource ?? 'log_parser';
-      }
-      return undefined;
-    })(),
-    prefillTpsSource: (() => {
-      if (logState.lastPrefillTpsAt && logState.lastPrefillTpsAt > (proxyState.lastPrefillTpsAt ?? 0)) {
-        return logState.prefillTpsSource ?? 'log_parser';
-      }
-      if (proxyState.lastPrefillTpsAt) {
-        return proxyState.prefillTpsSource ?? 'proxy';
-      }
-      return undefined;
-    })(),
-  };
-}
-
-/** Update state from a SSE-based proxy request (the primary real-time source). */
-export function updateFromProxy(
+/**
+ * Update a specific request's state from the log parser (used as a fallback for direct GUI chats).
+ */
+export function updateRequestStateFromLog(
+  reqId: string,
   prefillProgress: number,
   generateTokens: number,
   tokensPerSecond?: number,
   prefillTokensPerSecond?: number,
 ): void {
-  updateProxyState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond);
+  updateRequestStateInternal(reqId, prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond, 'log_parser');
 }
 
-/** Update only generate tokens and tokens per second for SSE-based proxy, preserving prefillProgress. */
-export function updateGenerateOnlyFromProxy(
-  generateTokens: number,
-  tokensPerSecond?: number,
-): void {
-  const now = Date.now();
-  const newProxy: Partial<ProxyState> = {
-    generateTokens,
-    lastGenerateAt: now,
-    lastUpdateAt: now,
-  };
-  if (tokensPerSecond !== undefined) {
-    newProxy.tokensPerSecond = tokensPerSecond;
-    newProxy.lastTpsAt = now;
-    newProxy.tpsSource = 'proxy';
-  }
-  proxyState = { ...proxyState, ...newProxy };
-}
-
-/** Update only prefill progress for SSE-based proxy, preserving generateTokens. */
-export function updatePrefillOnlyFromProxy(
+/**
+ * Update only prefill progress from log parser for a specific request, preserving generateTokens and lastGenerateAt.
+ */
+export function updateRequestLogPrefillOnly(
+  reqId: string,
   prefillProgress: number,
-  tokensPerSecond?: number,
-  prefillTokensPerSecond?: number,
 ): void {
-  const now = Date.now();
-  const newProxy: Partial<ProxyState> = {
-    prefillProgress,
-    lastPrefillAt: now,
-    lastUpdateAt: now,
-  };
-  if (tokensPerSecond !== undefined) {
-    newProxy.tokensPerSecond = tokensPerSecond;
-    newProxy.lastTpsAt = now;
-    newProxy.tpsSource = 'proxy';
-  }
-  if (prefillTokensPerSecond !== undefined) {
-    newProxy.prefillTokensPerSecond = prefillTokensPerSecond;
-    newProxy.lastPrefillTpsAt = now;
-    newProxy.prefillTpsSource = 'proxy';
-  }
-  proxyState = { ...proxyState, ...newProxy };
+  updateRequestPrefillOnlyInternal(reqId, prefillProgress);
 }
 
-/** Update state from the log parser (used as a fallback for direct GUI chats). */
-export function updateFromLog(
-  prefillProgress: number,
+/**
+ * Update only generate tokens from log parser for a specific request, preserving prefillProgress and lastPrefillAt.
+ */
+export function updateRequestLogGenerateOnly(
+  reqId: string,
   generateTokens: number,
-  tokensPerSecond?: number,
-  prefillTokensPerSecond?: number,
 ): void {
-  updateLogState(prefillProgress, generateTokens, tokensPerSecond, prefillTokensPerSecond);
-}
-
-/** Update only prefill progress from log parser, preserving generateTokens and lastGenerateAt. */
-export function updateLogPrefillOnly(prefillProgress: number): void {
-  _updateLogPrefillOnly(prefillProgress);
-}
-
-/** Update only generate tokens from log parser, preserving prefillProgress and lastPrefillAt. */
-export function updateLogGenerateOnly(generateTokens: number): void {
-  _updateLogGenerateOnly(generateTokens);
+  updateRequestGenerateOnlyInternal(reqId, generateTokens);
 }
 
 /**
@@ -307,47 +227,115 @@ export function updateLogGenerateOnly(generateTokens: number): void {
 export function updatePrefillTokensPerSecond(prefillTokensPerSecond: number): void {
   if (prefillTokensPerSecond <= 0) return;
   const state = getLmStudioRunState();
-  updateLogState(
-    state.prefillProgress,
-    state.generateTokens,
-    undefined,
-    prefillTokensPerSecond,
-  );
+  // global fallback only, no reqId for direct GUI mode
+  updateRequestStateInternal('global-fallback', state.prefillProgress, state.generateTokens, undefined, prefillTokensPerSecond, 'log_parser');
 }
 
 /**
- * Reset state when a new request begins (called on chat.start).
- * Clears everything and returns to idle/rest-api baseline.
+ * Get all active request states.
  */
-export function resetLmStudioRunState(): void {
-  proxyState = { ...defaultProxyState };
-  logState = { ...defaultLogState };
+export function getActiveRequestStates(): RequestState[] {
+  return Array.from(requestStates.values()).filter(s => s.state !== 'idle');
 }
 
 /**
- * Set the chat start time when a new request begins.
+ * Aggregate state from all active request states.
+ * For concurrent inference: prefillProgress = max, generateTokens = sum, tps = sum.
  */
-export function setChatStartAt(): void {
+export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
+  const states = getActiveRequestStates();
+  if (states.length === 0) {
+    return getBaselineState();
+  }
+
+  let maxPrefill = 0;
+  let sumGenerate = 0;
+  let sumTps = 0;
+  let maxPrefillTps = 0;
+  let state: 'idle' | 'prefill' | 'generate' = 'idle';
+  let chatStartAt = 0;
+  let lastUpdateAt = 0;
+  let finalPrefillSource: RequestState['prefillSource'] = 'rest_api';
+  let finalGenerateSource: RequestState['generateSource'] = 'rest_api';
+  let finalTpsSource: RequestState['tpsSource'] | undefined = undefined;
+  let finalPrefillTpsSource: RequestState['prefillTpsSource'] | undefined = undefined;
+
+  for (const s of states) {
+    if (s.state === 'prefill') {
+      if (s.prefillProgress > maxPrefill) maxPrefill = s.prefillProgress;
+      if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > 0) {
+        if (s.prefillTokensPerSecond > maxPrefillTps) {
+          maxPrefillTps = s.prefillTokensPerSecond;
+          finalPrefillTpsSource = s.prefillTpsSource ?? 'proxy';
+        }
+      }
+      if (s.lastPrefillAt && s.lastPrefillAt > lastUpdateAt) lastUpdateAt = s.lastPrefillAt;
+      if (s.chatStartAt && s.chatStartAt < chatStartAt || chatStartAt === 0) chatStartAt = s.chatStartAt;
+      if (maxPrefill > 0) finalPrefillSource = s.prefillSource ?? 'proxy';
+    } else if (s.state === 'generate') {
+      sumGenerate += s.generateTokens;
+      if (s.tokensPerSecond && s.tokensPerSecond > 0) {
+        sumTps += s.tokensPerSecond;
+        finalTpsSource = s.tpsSource ?? 'proxy';
+      }
+      if (s.lastGenerateAt && s.lastGenerateAt > lastUpdateAt) lastUpdateAt = s.lastGenerateAt;
+      state = 'generate';
+    }
+    if (s.lastUpdateAt && s.lastUpdateAt > lastUpdateAt) lastUpdateAt = s.lastUpdateAt;
+  }
+
+  return {
+    state,
+    prefillProgress: maxPrefill,
+    generateTokens: sumGenerate,
+    tokensPerSecond: sumTps > 0 ? sumTps : undefined,
+    prefillTokensPerSecond: maxPrefillTps > 0 ? maxPrefillTps : undefined,
+    lastUpdateAt,
+    chatStartAt,
+    prefillSource: finalPrefillSource,
+    generateSource: finalGenerateSource,
+    tpsSource: finalTpsSource,
+    prefillTpsSource: finalPrefillTpsSource,
+  };
+}
+
+/** Get baseline state when no active requests. */
+function getBaselineState(): LmStudioRunState {
+  return {
+    state: 'idle',
+    prefillProgress: 0,
+    generateTokens: 0,
+    lastUpdateAt: Date.now(),
+    chatStartAt: 0,
+    prefillSource: 'rest_api',
+    generateSource: 'rest_api',
+  };
+}
+
+/** Clear a specific request's state. */
+export function clearRequestState(reqId: string): void {
+  requestStates.delete(reqId);
+}
+
+/** Reset all request states (when no concurrent requests active). */
+export function resetAllRequestStates(): void {
+  requestStates.clear();
+}
+
+/** Set chat start time for a specific request. */
+export function setChatStartAtForRequest(reqId: string): void {
   const now = Date.now();
-  proxyState = {
-    ...proxyState,
-    chatStartAt: now,
-    lastUpdateAt: now,
-    lastPrefillAt: now,
-    prefillSource: proxyState.prefillSource === 'rest_api' ? 'proxy' : proxyState.prefillSource,
-  };
-  logState = {
-    ...logState,
-    chatStartAt: now,
-    lastUpdateAt: now,
-    lastPrefillAt: now,
-    prefillSource: logState.prefillSource === 'rest_api' ? 'log_parser' : logState.prefillSource,
-  };
+  const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
+  state.chatStartAt = now;
+  state.lastUpdateAt = now;
+  state.lastPrefillAt = now;
+  state.prefillSource = state.prefillSource === 'rest_api' ? 'proxy' : state.prefillSource;
+  requestStates.set(reqId, state);
 }
 
-/** Read the unified state. */
+/** Read the unified state, computed from active request states or baseline. */
 export function getLmStudioRunState(): Readonly<LmStudioRunState> {
-  return merge();
+  return getAggregateRunStateFromRequestStates();
 }
 
 /** Read the unified state with computed tokens per second. */
