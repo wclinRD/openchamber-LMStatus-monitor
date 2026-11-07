@@ -167,7 +167,12 @@ const render = (snapshot: Snapshot): void => {
   // When idle, show "—" to indicate no active inference.
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0 || (lmStudio.tokensPerSecond && lmStudio.tokensPerSecond > 0);
   if (isGenerating) {
-    const prefillDisplay = 100;
+    // Prompt processing may still be under way (and concurrent inference can
+    // keep prefilling while another slot generates), so show the real progress
+    // until it reaches 100. Only a completed prefill reads 100%.
+    const prefillDisplay = lmStudio.prefillProgress > 0 && lmStudio.prefillProgress < 100
+      ? lmStudio.prefillProgress
+      : 100;
     const ppTps = lmStudio.prefillTokensPerSecond;
     prefillValue.textContent = ppTps && ppTps > 0 ? `${formatPrefillPercent(prefillDisplay)} · ${ppTps.toFixed(1)} tok/s` : formatPrefillPercent(prefillDisplay);
     prefillMeter.set(prefillDisplay);
@@ -180,11 +185,6 @@ const render = (snapshot: Snapshot): void => {
     } else {
       generateValue.textContent = '—';
     }
-  } else if (lmStudio.prefillProgress > 0 && lmStudio.prefillProgress < 100) {
-    const ppTps = lmStudio.prefillTokensPerSecond;
-    prefillValue.textContent = ppTps && ppTps > 0 ? `${formatPrefillPercent(lmStudio.prefillProgress)} · ${ppTps.toFixed(1)} tok/s` : formatPrefillPercent(lmStudio.prefillProgress);
-    prefillMeter.set(lmStudio.prefillProgress);
-    generateValue.textContent = '—';
   } else {
     prefillValue.textContent = '—';
     prefillMeter.set(0);

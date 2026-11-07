@@ -510,6 +510,7 @@ function createEmptyRequestState(reqId) {
     state: "idle",
     lastUpdateAt: now,
     chatStartAt: now,
+    generateStartAt: 0,
     lastPrefillAt: now,
     lastGenerateAt: now,
     prefillSource: "rest_api",
@@ -529,6 +530,12 @@ function updateRequestStateInternal(reqId, prefillProgress, generateTokens, toke
   state.prefillProgress = prefillProgress;
   state.lastPrefillAt = now;
   state.generateTokens = generateTokens;
+  if (generateTokens > 0) {
+    if (state.generateStartAt === 0)
+      state.generateStartAt = now;
+  } else {
+    state.generateStartAt = 0;
+  }
   state.lastGenerateAt = now;
   state.lastUpdateAt = now;
   state.state = inferState(prefillProgress, generateTokens);
@@ -560,6 +567,12 @@ function updateRequestGenerateOnlyInternal(reqId, generateTokens, tokensPerSecon
   const now = Date.now();
   const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
   state.generateTokens = generateTokens;
+  if (generateTokens > 0) {
+    if (state.generateStartAt === 0)
+      state.generateStartAt = now;
+  } else {
+    state.generateStartAt = 0;
+  }
   state.lastGenerateAt = now;
   state.lastUpdateAt = now;
   state.state = inferState(state.prefillProgress, generateTokens);
@@ -620,29 +633,33 @@ function getAggregateRunStateFromRequestStates() {
   let maxPrefillTps = 0;
   let state = "idle";
   let chatStartAt = 0;
+  let generateStartAt = 0;
   let lastUpdateAt = 0;
   let finalPrefillSource = "rest_api";
   let finalGenerateSource = "rest_api";
   let finalTpsSource = undefined;
   let finalPrefillTpsSource = undefined;
   for (const s of states) {
+    if (s.prefillProgress > maxPrefill) {
+      maxPrefill = s.prefillProgress;
+      finalPrefillSource = s.prefillSource ?? "proxy";
+    }
+    if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > maxPrefillTps) {
+      maxPrefillTps = s.prefillTokensPerSecond;
+      finalPrefillTpsSource = s.prefillTpsSource ?? "proxy";
+    }
     if (s.state === "prefill") {
-      if (s.prefillProgress > maxPrefill)
-        maxPrefill = s.prefillProgress;
-      if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > 0) {
-        if (s.prefillTokensPerSecond > maxPrefillTps) {
-          maxPrefillTps = s.prefillTokensPerSecond;
-          finalPrefillTpsSource = s.prefillTpsSource ?? "proxy";
-        }
-      }
       if (s.lastPrefillAt && s.lastPrefillAt > lastUpdateAt)
         lastUpdateAt = s.lastPrefillAt;
       if (s.chatStartAt && s.chatStartAt < chatStartAt || chatStartAt === 0)
         chatStartAt = s.chatStartAt;
-      if (maxPrefill > 0)
-        finalPrefillSource = s.prefillSource ?? "proxy";
+      if (state !== "generate")
+        state = "prefill";
     } else if (s.state === "generate") {
       sumGenerate += s.generateTokens;
+      if (s.generateStartAt > 0 && (generateStartAt === 0 || s.generateStartAt < generateStartAt)) {
+        generateStartAt = s.generateStartAt;
+      }
       if (s.tokensPerSecond && s.tokensPerSecond > 0) {
         sumTps += s.tokensPerSecond;
         finalTpsSource = s.tpsSource ?? "proxy";
@@ -662,6 +679,7 @@ function getAggregateRunStateFromRequestStates() {
     prefillTokensPerSecond: maxPrefillTps > 0 ? maxPrefillTps : undefined,
     lastUpdateAt,
     chatStartAt,
+    generateStartAt,
     prefillSource: finalPrefillSource,
     generateSource: finalGenerateSource,
     tpsSource: finalTpsSource,
@@ -675,6 +693,7 @@ function getBaselineState() {
     generateTokens: 0,
     lastUpdateAt: Date.now(),
     chatStartAt: 0,
+    generateStartAt: 0,
     prefillSource: "rest_api",
     generateSource: "rest_api"
   };
@@ -689,6 +708,7 @@ function setChatStartAtForRequest(reqId) {
   const now = Date.now();
   const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
   state.chatStartAt = now;
+  state.generateStartAt = 0;
   state.lastUpdateAt = now;
   state.lastPrefillAt = now;
   state.prefillSource = state.prefillSource === "rest_api" ? "proxy" : state.prefillSource;
@@ -1399,14 +1419,11 @@ class Sampler {
     const lmStudioBase = await fetchLmStudioStatus();
     const requestCount = getActiveRequestCount();
     const runState = requestCount > 1 ? getAggregateRunStateFromActiveRequests() : getLmStudioRunState();
-    let computedTps = undefined;
-    if (runState.generateTokens > 0) {
-      const startAt = runState.chatStartAt > 0 ? runState.chatStartAt : runState.lastUpdateAt;
-      if (startAt > 0) {
-        const elapsed = (Date.now() - startAt) / 1000;
-        if (elapsed > 0) {
-          computedTps = runState.generateTokens / elapsed;
-        }
+    let computedTps = runState.tokensPerSecond;
+    if (runState.generateTokens > 0 && runState.generateStartAt > 0) {
+      const elapsed = (Date.now() - runState.generateStartAt) / 1000;
+      if (elapsed > 0) {
+        computedTps = runState.generateTokens / elapsed;
       }
     }
     const parallel = lmStudioBase.models?.find((m) => m.id === lmStudioBase.modelName)?.parallel || lmStudioBase.models?.find((m) => m.loadedInstances?.length)?.parallel || (lmStudioBase.models?.find((m) => m.loadedInstances?.[0]?.config?.parallel) ? lmStudioBase.models.find((m) => m.loadedInstances?.[0]?.config?.parallel).loadedInstances[0].config.parallel : undefined);
@@ -1414,7 +1431,7 @@ class Sampler {
       ...lmStudioBase,
       prefillProgress: runState.prefillProgress,
       generateTokens: runState.generateTokens,
-      tokensPerSecond: computedTps ?? runState.tokensPerSecond,
+      tokensPerSecond: computedTps,
       prefillTokensPerSecond: runState.prefillTokensPerSecond,
       state: runState.state === "idle" ? lmStudioBase.state : runState.state,
       logStats: getLogStats(),

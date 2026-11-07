@@ -11,6 +11,8 @@ export interface LmStudioRunState {
   state: 'idle' | 'prefill' | 'generate';
   lastUpdateAt: number;
   chatStartAt: number;
+  /** When the first output token arrived; generate TPS is measured from here. 0 before generation. */
+  generateStartAt: number;
   prefillSource: 'proxy' | 'log_parser' | 'rest_api';
   generateSource: 'proxy' | 'log_parser' | 'rest_api';
   tpsSource?: 'proxy' | 'log_parser' | 'rest_api';
@@ -43,6 +45,7 @@ function createEmptyRequestState(reqId: string): RequestState {
     state: 'idle',
     lastUpdateAt: now,
     chatStartAt: now,
+    generateStartAt: 0,
     lastPrefillAt: now,
     lastGenerateAt: now,
     prefillSource: 'rest_api',
@@ -56,10 +59,12 @@ function inferState(prefill: number, generate: number): 'idle' | 'prefill' | 'ge
   return 'idle';
 }
 
-function computeTokensPerSecond(generateTokens: number, state: Pick<LmStudioRunState, 'chatStartAt' | 'lastUpdateAt'>): number | undefined {
+function computeTokensPerSecond(generateTokens: number, state: Pick<LmStudioRunState, 'generateStartAt' | 'lastUpdateAt'>): number | undefined {
   if (generateTokens <= 0) return undefined;
   const now = Date.now();
-  const startAt = state.chatStartAt > 0 ? state.chatStartAt : state.lastUpdateAt;
+  // Measure from the first generated token, not from chat start: prefill time
+  // must not dilute the generate speed.
+  const startAt = state.generateStartAt > 0 ? state.generateStartAt : state.lastUpdateAt;
   const elapsed = startAt > 0 ? (now - startAt) / 1000 : 0;
   return elapsed > 0 ? generateTokens / elapsed : undefined;
 }
@@ -78,6 +83,11 @@ function updateRequestStateInternal(
   state.prefillProgress = prefillProgress;
   state.lastPrefillAt = now;
   state.generateTokens = generateTokens;
+  if (generateTokens > 0) {
+    if (state.generateStartAt === 0) state.generateStartAt = now;
+  } else {
+    state.generateStartAt = 0;
+  }
   state.lastGenerateAt = now;
   state.lastUpdateAt = now;
   state.state = inferState(prefillProgress, generateTokens);
@@ -121,6 +131,11 @@ function updateRequestGenerateOnlyInternal(
   const now = Date.now();
   const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
   state.generateTokens = generateTokens;
+  if (generateTokens > 0) {
+    if (state.generateStartAt === 0) state.generateStartAt = now;
+  } else {
+    state.generateStartAt = 0;
+  }
   state.lastGenerateAt = now;
   state.lastUpdateAt = now;
   state.state = inferState(state.prefillProgress, generateTokens);
@@ -254,6 +269,7 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
   let maxPrefillTps = 0;
   let state: 'idle' | 'prefill' | 'generate' = 'idle';
   let chatStartAt = 0;
+  let generateStartAt = 0;
   let lastUpdateAt = 0;
   let finalPrefillSource: RequestState['prefillSource'] = 'rest_api';
   let finalGenerateSource: RequestState['generateSource'] = 'rest_api';
@@ -261,19 +277,26 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
   let finalPrefillTpsSource: RequestState['prefillTpsSource'] | undefined = undefined;
 
   for (const s of states) {
+    // Prefill progress survives the switch to generate: a generating request has
+    // already finished prompt processing, and concurrent slots may still prefill.
+    if (s.prefillProgress > maxPrefill) {
+      maxPrefill = s.prefillProgress;
+      finalPrefillSource = s.prefillSource ?? 'proxy';
+    }
+    if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > maxPrefillTps) {
+      maxPrefillTps = s.prefillTokensPerSecond;
+      finalPrefillTpsSource = s.prefillTpsSource ?? 'proxy';
+    }
+
     if (s.state === 'prefill') {
-      if (s.prefillProgress > maxPrefill) maxPrefill = s.prefillProgress;
-      if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > 0) {
-        if (s.prefillTokensPerSecond > maxPrefillTps) {
-          maxPrefillTps = s.prefillTokensPerSecond;
-          finalPrefillTpsSource = s.prefillTpsSource ?? 'proxy';
-        }
-      }
       if (s.lastPrefillAt && s.lastPrefillAt > lastUpdateAt) lastUpdateAt = s.lastPrefillAt;
       if (s.chatStartAt && s.chatStartAt < chatStartAt || chatStartAt === 0) chatStartAt = s.chatStartAt;
-      if (maxPrefill > 0) finalPrefillSource = s.prefillSource ?? 'proxy';
+      if (state !== 'generate') state = 'prefill';
     } else if (s.state === 'generate') {
       sumGenerate += s.generateTokens;
+      if (s.generateStartAt > 0 && (generateStartAt === 0 || s.generateStartAt < generateStartAt)) {
+        generateStartAt = s.generateStartAt;
+      }
       if (s.tokensPerSecond && s.tokensPerSecond > 0) {
         sumTps += s.tokensPerSecond;
         finalTpsSource = s.tpsSource ?? 'proxy';
@@ -292,6 +315,7 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
     prefillTokensPerSecond: maxPrefillTps > 0 ? maxPrefillTps : undefined,
     lastUpdateAt,
     chatStartAt,
+    generateStartAt,
     prefillSource: finalPrefillSource,
     generateSource: finalGenerateSource,
     tpsSource: finalTpsSource,
@@ -307,6 +331,7 @@ function getBaselineState(): LmStudioRunState {
     generateTokens: 0,
     lastUpdateAt: Date.now(),
     chatStartAt: 0,
+    generateStartAt: 0,
     prefillSource: 'rest_api',
     generateSource: 'rest_api',
   };
@@ -327,6 +352,7 @@ export function setChatStartAtForRequest(reqId: string): void {
   const now = Date.now();
   const state = requestStates.get(reqId) ?? createEmptyRequestState(reqId);
   state.chatStartAt = now;
+  state.generateStartAt = 0;
   state.lastUpdateAt = now;
   state.lastPrefillAt = now;
   state.prefillSource = state.prefillSource === 'rest_api' ? 'proxy' : state.prefillSource;

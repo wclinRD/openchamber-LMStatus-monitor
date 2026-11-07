@@ -213,15 +213,13 @@ export class Sampler {
     const requestCount = getActiveRequestCount();
     const runState = requestCount > 1 ? getAggregateRunStateFromActiveRequests() : getLmStudioRunState();
 
-    // Derive TPS from the run state: total tokens divided by elapsed time since chat start
-    let computedTps: number | undefined = undefined;
-    if (runState.generateTokens > 0) {
-      const startAt = runState.chatStartAt > 0 ? runState.chatStartAt : runState.lastUpdateAt;
-      if (startAt > 0) {
-        const elapsed = (Date.now() - startAt) / 1000;
-        if (elapsed > 0) {
-          computedTps = runState.generateTokens / elapsed;
-        }
+    // Derive TPS from the run state: total tokens divided by elapsed time since
+    // the first generated token. Prefill time must not count towards generate speed.
+    let computedTps: number | undefined = runState.tokensPerSecond;
+    if (runState.generateTokens > 0 && runState.generateStartAt > 0) {
+      const elapsed = (Date.now() - runState.generateStartAt) / 1000;
+      if (elapsed > 0) {
+        computedTps = runState.generateTokens / elapsed;
       }
     }
 
@@ -233,7 +231,7 @@ export class Sampler {
       ...lmStudioBase,
       prefillProgress: runState.prefillProgress,
       generateTokens: runState.generateTokens,
-      tokensPerSecond: computedTps ?? runState.tokensPerSecond,
+      tokensPerSecond: computedTps,
       prefillTokensPerSecond: runState.prefillTokensPerSecond,
       state: runState.state === 'idle' ? (lmStudioBase.state as any) : runState.state,
       logStats: getLogStats(),

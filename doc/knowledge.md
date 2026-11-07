@@ -90,7 +90,7 @@ const logActive = hasRecentLogActivity(15000);
 ```
 
 ### 3.3 tokens/s 計算
-- **Generate**：在 `chat-proxy` 用 delta 計數配合時間差計算，即時平滑；結束時用總 token 數 / 總耗時校正。Log parser 也會嘗試從 log 計算。
+- **Generate**：用「累計 token 數 ÷ 從第一顆生成 token 起到現在的秒數」計算平均速度（`generateStartAt`），prefill 時間不列入；chat-proxy 的 delta 瞬時速度作為過渡值。結束時用 `chat.end` 的總 token 數校正。Log parser 也會嘗試從 log 計算。
 - **Prefill**：從 log 解析速度資訊（`tokens/s`、`Prompt eval rate`、`Processed ... tokens in ... seconds`）
 - **UI 顯示**：在 generate 階段，Prefill 顯示 `100% · XXX tok/s`（如果有抓到 prefill 速度）；Generate 顯示 `XXXX tokens · XX.X tok/s`
 
@@ -260,7 +260,7 @@ bun run typecheck
 - `chat.start`：重置計數器、記錄開始時間
 - `prompt_processing.start`：記錄開始
 - `prompt_processing.progress`：更新 prefill 進度（0-1 轉換成 0-100）
-- `message.delta`：每次 +1 計數，計算即時 tokens/s（加權平均：70% 舊值 + 30% 瞬時值），轉換成 OpenAI 格式發送給客戶端
+- `message.delta`：每次 +1 計數，計算瞬時 tokens/s；`sampler.ts` 再用 `generateStartAt` 算平均速度（不含 prefill 時間），轉換成 OpenAI 格式發送給客戶端
 - `reasoning.delta`：轉換成 OpenAI 的 `reasoning_content`
 - `prompt_processing.end`：清除 prefill 進度
 - `chat.end`：從 stats 取得 `total_output_tokens` 做校正，用總耗時計算平均 tokens/s，發送 `finish_reason: "stop"` 和 `[DONE]`
