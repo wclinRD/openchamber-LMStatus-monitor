@@ -167,7 +167,7 @@ const render = (snapshot: Snapshot): void => {
   // When idle, show "—" to indicate no active inference.
   const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0 || (lmStudio.tokensPerSecond && lmStudio.tokensPerSecond > 0);
   if (isGenerating) {
-    const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
+    const prefillDisplay = 100;
     const ppTps = lmStudio.prefillTokensPerSecond;
     prefillValue.textContent = ppTps && ppTps > 0 ? `${formatPrefillPercent(prefillDisplay)} · ${ppTps.toFixed(1)} tok/s` : formatPrefillPercent(prefillDisplay);
     prefillMeter.set(prefillDisplay);

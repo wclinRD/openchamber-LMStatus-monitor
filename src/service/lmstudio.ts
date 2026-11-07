@@ -137,6 +137,7 @@ export async function fetchLmStudioStatus(): Promise<LmStudioStatus> {
         bitsPerWeight: bits,
         format: v1?.format ?? m.format,
         loadedInstances: v1?.loaded_instances ?? (v1 ? (v1 as any).loadedInstances : undefined),
+        parallel: v1?.loaded_instances?.[0]?.config?.parallel ?? (v1 as any)?.loaded_instances?.[0]?.config?.parallel,
       };
     });
 

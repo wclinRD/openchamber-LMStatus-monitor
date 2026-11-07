@@ -60,6 +60,10 @@ bun run typecheck
 
 The built files are committed: OpenChamber installs extensions without building them. Bump `version` in `package.json` to ship an update through Git.
 
+
+## 編譯主要執行程式碼
+bun run build
+
 ## License
 
 MIT

@@ -5,6 +5,18 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  updateRequestStateFromLog,
+  updateRequestLogPrefillOnly,
+  updateRequestLogGenerateOnly,
+  updatePrefillTokensPerSecond,
+  resetAllRequestStates,
+  setChatStartAtForRequest,
+  getLmStudioRunState,
+  getLmStudioRunStatePlain,
+} from './lm-studio-state.ts';
+import { getActiveRequestCount } from './chat-proxy.ts';
+import type { LmStudioRunState } from './lm-studio-state.ts';
 
 interface LmLogEntry {
   timestamp: Date;
@@ -24,16 +36,13 @@ export interface LmLogStats {
   chatEndEvents: number;
 }
 
-let currentPrefillProgress: number = 0;
-let currentGenerateTokens: number = 0;
 let generatedPacketCount: number = 0;
 let logWatcher: ChildProcess | null = null;
 /** Timestamp of last time we updated prefill/generate from logs */
 let lastLogUpdateAt = 0;
-let generateStartAt = 0;
-let lastGenerateTokens = 0;
-let lastGenerateAt = 0;
-let tokensPerSecond = 0;
+let fileWatcher: NodeJS.Timeout | null = null;
+let lastLogFilePosition = 0;
+let lastLogFilePath: string | null = null;
 let prefillTokensPerSecond = 0;
 
 /** Log event statistics */
@@ -193,54 +202,34 @@ function execFileSync(file: string, args: string[], options: { timeout: number }
 }
 
 /**
- * Updates the prefill progress from a log entry.
+ * Updates the prefill progress from a log entry (global fallback for direct GUI).
  */
 export function updatePrefillProgressFromLog(progress: number): void {
   if (progress < 0 || progress > 100) return;
-  currentPrefillProgress = progress;
+  updateRequestLogPrefillOnly('global-fallback', progress);
   lastLogUpdateAt = Date.now();
 }
 
 /**
- * Updates generate tokens from a log entry.
+ * Updates generate tokens from a log entry (global fallback for direct GUI).
  */
 export function updateGenerateTokensFromLog(tokens: number): void {
   if (tokens < 0) return;
-  const now = Date.now();
-  if (generateStartAt === 0 && tokens > 0) {
-    generateStartAt = now;
-    lastGenerateTokens = 0;
-    lastGenerateAt = now;
-    tokensPerSecond = 0;
-  }
-  if (tokens > currentGenerateTokens) {
-    if (lastGenerateAt > 0) {
-      const deltaTime = (now - lastGenerateAt) / 1000;
-      const deltaTokens = tokens - lastGenerateTokens;
-      if (deltaTime > 0 && deltaTokens > 0) {
-        const instant = deltaTokens / deltaTime;
-        tokensPerSecond = tokensPerSecond === 0 ? instant : tokensPerSecond * 0.7 + instant * 0.3;
-      }
-    }
-    lastGenerateTokens = tokens;
-    lastGenerateAt = now;
-  }
-  currentGenerateTokens = Math.max(0, tokens);
-  lastLogUpdateAt = now;
+  updateRequestLogGenerateOnly('global-fallback', tokens);
+  lastLogUpdateAt = Date.now();
 }
 
 /**
  * Resets the prefill progress and generate tokens when generation completes or becomes idle.
+ * Skips global state reset when concurrent requests are still active.
  */
 export function resetLmStudioStats(): void {
-  currentPrefillProgress = 0;
-  currentGenerateTokens = 0;
+  if (getActiveRequestCount() === 0) {
+    resetAllRequestStates();
+    setChatStartAtForRequest('global-fallback');
+  }
   generatedPacketCount = 0;
   lastLogUpdateAt = Date.now();
-  generateStartAt = 0;
-  lastGenerateTokens = 0;
-  lastGenerateAt = 0;
-  tokensPerSecond = 0;
   prefillTokensPerSecond = 0;
 }
 
@@ -248,28 +237,28 @@ export function resetLmStudioStats(): void {
  * Gets the current prefill progress.
  */
 export function getPrefillProgress(): number {
-  return currentPrefillProgress;
+  return getLmStudioRunState().prefillProgress;
 }
 
 /**
  * Gets the current generate tokens.
  */
 export function getGenerateTokens(): number {
-  return currentGenerateTokens;
+  return getLmStudioRunState().generateTokens;
 }
 
 /**
  * Gets tokens per second from log parser.
  */
 export function getTokensPerSecondFromLog(): number {
-  return tokensPerSecond;
+  return getLmStudioRunState().tokensPerSecond ?? 0;
 }
 
 /**
  * Gets prefill tokens per second from log parser.
  */
 export function getPrefillTokensPerSecondFromLog(): number {
-  return prefillTokensPerSecond;
+  return getLmStudioRunState().prefillTokensPerSecond ?? 0;
 }
 
 /**
@@ -317,43 +306,47 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
         const progress = parseFloat(prefillMatch[1]);
         if (!isNaN(progress) && progress >= 0 && progress <= 100) {
           eventType = 'prefill-progress';
-          if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
-            currentGenerateTokens = 0;
+          if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
+            updateRequestStateFromLog('global-fallback', 0, 0);
             generatedPacketCount = 0;
             console.log('[LM Log Parser] Switched back to prefill phase, cleared generate counter');
           }
         }
-      }
-      const prefillTpsMatch = content.match(/(?:prompt|prefill).*?([\d.]+)\s*tokens?\/s/i) || content.match(/([\d.]+)\s*tokens?\/s.*?(?:prompt|prefill)/i) || content.match(/Prompt eval rate.*?([\d.]+)/i);
-      if (prefillTpsMatch?.[1]) {
-        const tps = parseFloat(prefillTpsMatch[1]);
-        if (!isNaN(tps) && tps > 0) {
-          prefillTokensPerSecond = tps;
-        }
-      } else if (content.includes('Prompt processing complete')) {
-        prefillTokensPerSecond = 0;
-      } else if (content.match(/Processed .* tokens in .* seconds/i)) {
-        const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
-        const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
-        if (tokensMatch?.[1] && timeMatch?.[1]) {
-          const tokens = parseFloat(tokensMatch[1]);
-          const seconds = parseFloat(timeMatch[1]);
-          if (tokens > 0 && seconds > 0) {
-            prefillTokensPerSecond = tokens / seconds;
+      } else {
+        const prefillTpsMatch = content.match(/(?:prompt|prefill).*?([\d.]+)\s*tokens?\/s/i) || content.match(/([\d.]+)\s*tokens?\/s.*?(?:prompt|prefill)/i) || content.match(/Prompt eval rate.*?([\d.]+)/i);
+        if (prefillTpsMatch?.[1]) {
+          const tps = parseFloat(prefillTpsMatch[1]);
+          if (!isNaN(tps) && tps > 0) {
+            prefillTokensPerSecond = tps;
+            updatePrefillTokensPerSecond(tps);
           }
+        } else if (content.includes('Prompt processing complete')) {
+          prefillTokensPerSecond = 0;
+          updatePrefillTokensPerSecond(0);
+        } else if (content.match(/Processed .* tokens in .* seconds/i)) {
+          const tokensMatch = content.match(/Processed\s+([\d.]+)\s+tokens/i);
+          const timeMatch = content.match(/in\s+([\d.]+)\s+seconds/i);
+          if (tokensMatch?.[1] && timeMatch?.[1]) {
+            const tokens = parseFloat(tokensMatch[1]);
+            const seconds = parseFloat(timeMatch[1]);
+            if (tokens > 0 && seconds > 0) {
+              prefillTokensPerSecond = tokens / seconds;
+              updatePrefillTokensPerSecond(tokens / seconds);
+            }
+          }
+        } else if (
+          content.match(/Prompt processing.*completed/i) ||
+          content.includes('chat completion') ||
+          content.includes('generation complete') ||
+          content.includes('Prompt processing complete') ||
+          content.includes('Finished streaming response')
+        ) {
+          eventType = 'chat-end';
+        } else if (content.includes('Generated packet') || content.includes('llm.prediction.output')) {
+          eventType = 'model-output';
+        } else if (level === 'info' || level === 'warning' || level === 'error' || level === 'debug') {
+          eventType = 'server-event';
         }
-      } else if (
-        content.match(/Prompt processing.*completed/i) ||
-        content.includes('chat completion') ||
-        content.includes('generation complete') ||
-        content.includes('Prompt processing complete') ||
-        content.includes('Finished streaming response')
-      ) {
-        eventType = 'chat-end';
-      } else if (content.includes('Generated packet') || content.includes('llm.prediction.output')) {
-        eventType = 'model-output';
-      } else if (level === 'info' || level === 'warning' || level === 'error' || level === 'debug') {
-        eventType = 'server-event';
       }
     }
 
@@ -377,12 +370,6 @@ export function parseJsonLogLine(line: string): LmLogEntry | null {
             : 'unknown';
 
     if (eventType === 'model-output') {
-      // Clear prefill progress when transitioning to generate phase
-      if (currentPrefillProgress > 0) {
-        currentPrefillProgress = 0;
-        console.log('[LM Log Parser] Transitioned from prefill to generate phase, cleared prefill progress');
-      }
-
       // Extract stats object (direct structured JSON)
       const stats = (typeof parsed.stats === 'object' && parsed.stats !== null)
         ? parsed.stats as Record<string, unknown>
@@ -495,9 +482,9 @@ export function parseLogLine(line: string): LmLogEntry | null {
   if (prefillMatch?.[1]) {
     const progress = parseFloat(prefillMatch[1]);
     if (!isNaN(progress)) {
-      // Clear generate counter when switching back to prefill phase
-      if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
-        currentGenerateTokens = 0;
+      // Clear generate counter when switching back to prefill phase only if no concurrent requests remain.
+      if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
+        updateRequestStateFromLog('global-fallback', 0, 0);
         generatedPacketCount = 0;
         console.log('[LM Log Parser] Switched back to prefill phase via plain text log, cleared generate counter');
       }
@@ -524,16 +511,10 @@ export function parseLogLine(line: string): LmLogEntry | null {
   
   // Check for generate phase start (Generated packet indicates model output)
   if (line.includes('Generated packet') || line.includes('llm.prediction.output')) {
-    // Clear prefill progress when transitioning to generate phase
-    if (currentPrefillProgress > 0) {
-      currentPrefillProgress = 0;
-      console.log('[LM Log Parser] Transitioned from prefill to generate phase via plain text log, cleared prefill progress');
-    }
-    
     // Count generated packets in real-time
     generatedPacketCount++;
-    currentGenerateTokens = generatedPacketCount;
-    console.log(`[LM Log Parser] Generated packet count: ${generatedPacketCount}`);
+    updateRequestLogGenerateOnly('global-fallback', generatedPacketCount);
+    lastLogUpdateAt = Date.now();
     
     return {
       timestamp: new Date(),
@@ -551,18 +532,11 @@ export function parseLogLine(line: string): LmLogEntry | null {
  * Falls back to file-based watching if CLI is not available.
  */
 export function startLogWatcher(): void {
-  if (logWatcher) return;
+  if (logWatcher || fileWatcher) return;
 
-  const lmsCli = findLmsCli();
-  if (lmsCli) {
-    setWatcherState({ method: 'cli', latestLogFile: null, isWatching: true });
-    console.log('[LM Log Watcher] Starting CLI log watcher using:', lmsCli);
-    startCliLogWatcher(lmsCli);
-  } else {
-    console.log('[LM Log Watcher] LM Studio CLI not found, falling back to file-based log parsing');
-    setWatcherState({ method: 'file', latestLogFile: null, isWatching: true });
-    startFileLogWatcher();
-  }
+  setWatcherState({ method: 'file', latestLogFile: null, isWatching: true });
+  console.log('[LM Log Watcher] Starting file-based log watcher for real-time updates');
+  startFileLogWatcher();
 }
 
 /**
@@ -704,16 +678,18 @@ function startFileLogWatcher(): void {
         }
         
         if (latestEventType === 'chat-end') {
-          // Clear all stats when a conversation ends
-          resetLmStudioStats();
-          console.log('[LM File Watcher] chat-end detected, cleared all stats');
+          // Clear all stats when a conversation ends only if no concurrent requests remain.
+          if (getActiveRequestCount() === 0) {
+            resetLmStudioStats();
+          }
+          console.log('[LM File Watcher] chat-end detected');
         } else if (latestEventType === 'prefill-progress') {
           updatePrefillProgressFromLog(latestPrefillProgress!);
           console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
           
-          // Clear generate counter when switching back to prefill phase
-          if (currentGenerateTokens > 0 || generatedPacketCount > 0) {
-            currentGenerateTokens = 0;
+          // Clear generate counter when switching back to prefill phase only if no concurrent requests remain.
+          if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
+            updateRequestStateFromLog('global-fallback', 0, 0);
             generatedPacketCount = 0;
             console.log('[LM File Watcher] Switched back to prefill phase, cleared generate counter');
           }
@@ -734,12 +710,14 @@ function startFileLogWatcher(): void {
         
         if (packetCount > 0) {
           generatedPacketCount = packetCount;
-          currentGenerateTokens = packetCount;
+          updateRequestLogGenerateOnly('global-fallback', packetCount);
           console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
         } else if (latestEventType === 'chat-end') {
-          // Ensure stats are cleared after chat-end
-          generatedPacketCount = 0;
-          currentGenerateTokens = 0;
+          // Clear generated packets and stats only if no concurrent requests remain.
+          if (getActiveRequestCount() === 0) {
+            generatedPacketCount = 0;
+            updateRequestStateFromLog('global-fallback', 0, 0);
+          }
         }
       } catch (error) {
         console.error('[LM File Watcher] Error reading log file:', (error as Error).message);
@@ -781,11 +759,22 @@ function getLatestLogFile(logDir: string): string | null {
     const now = new Date();
     const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const dir = path.join(logDir, yearMonth);
-    const files = fs.readdirSync(dir).filter((f): f is string => typeof f === 'string' && f.endsWith('.log')).sort().reverse();
-    if (files.length === 0) return null;
-    const latestFile = files[0];
-    if (!latestFile) return null;
-    return path.join(dir, latestFile);
+    const entries = fs.readdirSync(dir)
+      .filter((f): f is string => typeof f === 'string' && f.endsWith('.log'))
+      .map((f) => {
+        const fullPath = path.join(dir, f);
+        try {
+          const stat = fs.statSync(fullPath);
+          return { path: fullPath, mtimeMs: stat.mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter((f): f is { path: string; mtimeMs: number } => f !== null);
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const first = entries[0];
+    return first ? first.path : null;
   } catch {
     return null;
   }

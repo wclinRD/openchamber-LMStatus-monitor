@@ -75,11 +75,14 @@ const lmSpecContext = el('div', 'lm-spec-context');
 const lmPrefillValue = el('span', 'sub num');
 const lmGenerateValue = el('span', 'sub num');
 const lmDetail = el('div', 'lm-detail');
+const lmSlots = el('span', 'muted');
+const lmReqs = el('div', 'lm-reqs');
 const lmCard = el('div', 'card', '', [
-  el('div', 'card-top', '', [el('span', 'label', 'LM Studio'), el('span', 'grow')]),
+  el('div', 'card-top', '', [el('span', 'label', 'LM Studio'), lmSlots, el('span', 'grow')]),
   lmStateValue,
   el('div', 'lm-row', '', [el('span', 'lm-label', 'Prefill'), lmPrefillValue]),
   el('div', 'lm-row', '', [el('span', 'lm-label', 'Generate'), lmGenerateValue]),
+  lmReqs,
   lmSpecContext,
   lmDetail,
 ]);
@@ -370,44 +373,48 @@ const render = (snapshot: Snapshot): void => {
   const { lmStudio } = snapshot;
   const currentModel = Array.isArray(lmStudio.models) ? lmStudio.models.find((m) => m.id === lmStudio.modelName) : undefined;
   const currentDisplay = currentModel?.displayName || lmStudio.modelName;
+  const requests = Array.isArray(lmStudio.requests) ? lmStudio.requests : [];
+  const hasGenerate = requests.some(r => r.state === 'generate' || r.generateTokens > 0);
+  const hasPrefill = requests.some(r => r.state === 'prefill');
+  const mixedState = hasGenerate && hasPrefill;
+
   let stateLabel: string;
-  if (lmStudio.modelName) {
-    switch (lmStudio.state) {
-      case 'loaded':
-        stateLabel = currentDisplay;
-        break;
-      case 'loading':
-        stateLabel = `${currentDisplay} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
-        break;
-      case 'unloaded':
-        stateLabel = currentDisplay ? `${currentDisplay} · 卸載` : '卸載';
-        break;
-      case 'error':
-        stateLabel = currentDisplay ? `${currentDisplay} · 錯誤` : '錯誤';
-        break;
-      default:
-        stateLabel = currentDisplay;
-    }
+  let stateClass = '';
+
+  if (mixedState) {
+    const generateReq = requests.filter(r => r.state === 'generate' || r.generateTokens > 0);
+    const prefillReq = requests.filter(r => r.state === 'prefill' || r.prefillProgress > 0);
+    stateLabel = `混合: ${generateReq.length} 生成中, ${prefillReq.length} 處理中`;
+    stateClass = 'big num lm-state lm-state-mixed';
+  } else if (hasGenerate) {
+    const modelState = lmStudio.state === 'generate' || lmStudio.state === 'loading' ? 'loading' : 'loaded';
+    stateLabel = currentDisplay ? `${currentDisplay} · 生成中` : '生成中';
+    stateClass = modelState === 'loaded' ? 'big num lm-state lm-state-loaded lm-state-dim' : 'big num lm-state lm-state-loading';
+  } else if (hasPrefill) {
+    const modelState = lmStudio.state === 'loading' ? 'loading' : 'unloaded';
+    stateLabel = currentDisplay ? `${currentDisplay} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}` : `載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
+    stateClass = lmStudio.state === 'loaded' ? 'big num lm-state lm-state-loaded lm-state-dim' : `big num lm-state lm-state-${modelState}`;
   } else {
     switch (lmStudio.state) {
       case 'loaded':
-        stateLabel = '掛載';
+        stateLabel = currentDisplay ?? '掛載';
         break;
       case 'unloaded':
-        stateLabel = '卸載';
+        stateLabel = currentDisplay ? `${currentDisplay} · 卸載` : '卸載';
         break;
       case 'loading':
         stateLabel = `載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
         break;
       case 'error':
-        stateLabel = '錯誤';
+        stateLabel = currentDisplay ? `${currentDisplay} · 錯誤` : '錯誤';
         break;
       default:
-        stateLabel = '—';
+        stateLabel = currentDisplay ?? '—';
     }
+    stateClass = lmStudio.state === 'loaded' ? 'big num lm-state lm-state-loaded lm-state-dim' : `big num lm-state lm-state-${lmStudio.state}`;
   }
   lmStateValue.textContent = stateLabel;
-  lmStateValue.className = lmStudio.state === 'loaded' ? 'big num lm-state lm-state-loaded lm-state-dim' : `big num lm-state lm-state-${lmStudio.state}`;
+  lmStateValue.className = stateClass;
 
   const specParts: string[] = [];
   if (currentModel?.paramsString) specParts.push(currentModel.paramsString);
@@ -430,15 +437,20 @@ const render = (snapshot: Snapshot): void => {
   lmSpecContext.textContent = parts.join(' · ');
   lmSpecContext.hidden = parts.length === 0;
 
-  const isGenerating = lmStudio.prefillProgress > 0 || lmStudio.generateTokens > 0;
-  if (isGenerating) {
-    const prefillDisplay = lmStudio.prefillProgress > 0 ? lmStudio.prefillProgress : 100;
+  if (mixedState) {
+    const generateTokensSum = requests.filter(r => r.state === 'generate' || r.generateTokens > 0).reduce((sum, r) => sum + r.generateTokens, 0);
+    const generateTpsSum = requests.filter(r => r.state === 'generate' || r.generateTokens > 0).reduce((sum, r) => sum + (r.tokensPerSecond ?? 0), 0);
+    lmGenerateValue.textContent = generateTokensSum > 0
+      ? `${generateTokensSum.toLocaleString()} tokens · ${generateTpsSum > 0 ? `${generateTpsSum.toFixed(1)} tok/s` : 'Generating'}`
+      : 'Generating';
+    const prefillDisplay = formatPrefillPercent(lmStudio.prefillProgress);
     const ppTps = lmStudio.prefillTokensPerSecond;
     if (ppTps && ppTps > 0) {
-      lmPrefillValue.textContent = `${formatPrefillPercent(prefillDisplay)} · ${ppTps.toFixed(1)} tok/s`;
+      lmPrefillValue.textContent = `${prefillDisplay} · ${ppTps.toFixed(1)} tok/s`;
     } else {
-      lmPrefillValue.textContent = formatPrefillPercent(prefillDisplay);
+      lmPrefillValue.textContent = prefillDisplay;
     }
+  } else if (hasGenerate) {
     const tps = lmStudio.tokensPerSecond;
     if (tps && tps > 0) {
       const tokens = lmStudio.generateTokens > 0 ? `${lmStudio.generateTokens.toLocaleString()} tokens · ` : '';
@@ -448,7 +460,14 @@ const render = (snapshot: Snapshot): void => {
     } else {
       lmGenerateValue.textContent = '—';
     }
-  } else if (lmStudio.prefillProgress > 0 && lmStudio.prefillProgress < 100) {
+    const prefillDisplay = lmStudio.prefillProgress > 0 ? formatPrefillPercent(lmStudio.prefillProgress) : '—';
+    const ppTps = lmStudio.prefillTokensPerSecond;
+    if (ppTps && ppTps > 0) {
+      lmPrefillValue.textContent = `${prefillDisplay} · ${ppTps.toFixed(1)} tok/s`;
+    } else {
+      lmPrefillValue.textContent = prefillDisplay;
+    }
+  } else if (hasPrefill) {
     const ppTps = lmStudio.prefillTokensPerSecond;
     if (ppTps && ppTps > 0) {
       lmPrefillValue.textContent = `${formatPrefillPercent(lmStudio.prefillProgress)} · ${ppTps.toFixed(1)} tok/s`;
@@ -460,6 +479,46 @@ const render = (snapshot: Snapshot): void => {
     lmPrefillValue.textContent = '—';
     lmGenerateValue.textContent = '—';
   }
+
+  if (lmStudio.parallel) {
+    lmSlots.textContent = `${lmStudio.activeRequestCount ?? 0}/${lmStudio.parallel} slots`;
+  } else if (lmStudio.activeRequestCount && lmStudio.activeRequestCount > 0) {
+    lmSlots.textContent = `${lmStudio.activeRequestCount} active`;
+  } else {
+    lmSlots.textContent = '';
+  }
+
+  lmReqs.replaceChildren();
+  const reqs = Array.isArray(lmStudio.requests) ? lmStudio.requests : [];
+  for (const r of reqs.slice(0, 4)) {
+    const row = el('div', 'lm-req-row');
+    const name = el('div', 'lm-req-name');
+    name.textContent = r.modelDisplayName || r.model || '—';
+    const st = el('div', 'lm-req-state');
+    if (r.state === 'generate') {
+      const tps = r.tokensPerSecond;
+      if (tps && tps > 0) {
+        const tokens = r.generateTokens > 0 ? `${r.generateTokens.toLocaleString()} tokens · ` : '';
+        st.textContent = `${tokens}${tps.toFixed(1)} tok/s`;
+      } else if (r.generateTokens > 0) {
+        st.textContent = `${r.generateTokens.toLocaleString()} tokens`;
+      } else {
+        st.textContent = 'Generate';
+      }
+    } else if (r.state === 'prefill') {
+      const ppTps = r.prefillTokensPerSecond;
+      if (ppTps && ppTps > 0) {
+        st.textContent = `Prefill ${formatPrefillPercent(r.prefillProgress)} · ${ppTps.toFixed(1)} tok/s`;
+      } else {
+        st.textContent = formatPrefillPercent(r.prefillProgress);
+      }
+    } else {
+      st.textContent = '—';
+    }
+    row.append(name, st);
+    lmReqs.append(row);
+  }
+  lmReqs.hidden = reqs.length === 0;
 
   lmDetail.replaceChildren();
   if (Array.isArray(lmStudio.models) && lmStudio.models.length > 0) {

@@ -49,6 +49,7 @@ export const PANEL_STYLE = `
   .lm-state-loading { color: var(--oc-info); }
   .lm-state-unloaded { color: var(--oc-muted); }
   .lm-state-error { color: var(--oc-error); }
+  .lm-state-mixed { color: color-mix(in srgb, var(--oc-warning) 80%, transparent); }
   .lm-state-dim { color: color-mix(in srgb, var(--oc-fg) 70%, transparent); }
   .lm-spec-context { color: var(--oc-muted); font-size: 11px; }
   .lm-detail { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
