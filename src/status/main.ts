@@ -105,7 +105,7 @@ const render = (snapshot: Snapshot): void => {
 
   const memoryPct = Math.round((system.memoryUsed / Math.max(1, system.memoryTotal)) * 100);
   memoryMeter.set(memoryPct);
-  memoryRow.querySelector<HTMLElement>('.value')!.textContent = `${formatBytes(system.memoryUsed)} / ${formatBytes(system.memoryTotal)}`;
+  memoryRow.querySelector<HTMLElement>('.value')!.textContent = `${formatBytes(system.memoryUsed)} / ${formatBytes(system.memoryTotal)} · ${formatPercent(memoryPct)}`;
 
   // Network
   networkRow.hidden = false;
