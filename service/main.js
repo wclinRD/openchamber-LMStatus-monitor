@@ -148,6 +148,8 @@ import http from "node:http";
 
 // src/service/sampler.ts
 import os from "node:os";
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 // src/service/kill.ts
 import { execFile } from "node:child_process";
@@ -1244,6 +1246,103 @@ function getLatestLogFile(logDir) {
 // src/service/sampler.ts
 var SAMPLE_INTERVAL_MS = 2000;
 var PORTS_EVERY = 2;
+var parseNetstatIbMacos = (output) => {
+  const bytes = new Map;
+  let currentName = null;
+  for (const line of output.split(`
+`)) {
+    if (/^Name/.test(line))
+      continue;
+    const parts = line.split(/\s+/).filter(Boolean);
+    if (parts.length < 10)
+      continue;
+    const isLinkRow = line.includes("<Link#");
+    if (isLinkRow) {
+      const match = line.match(/^(\S+)\s/);
+      currentName = match ? match[1] || null : null;
+      if (!currentName)
+        continue;
+      if (!bytes.has(currentName)) {
+        bytes.set(currentName, { tx: 0, rx: 0 });
+      }
+    }
+    if (!currentName)
+      continue;
+    let ibytes;
+    let obytes;
+    if (parts.length === 10) {
+      ibytes = Number(parts[5]);
+      obytes = Number(parts[8]);
+    } else {
+      ibytes = Number(parts[6]);
+      obytes = Number(parts[9]);
+    }
+    if (!Number.isNaN(ibytes) && !Number.isNaN(obytes)) {
+      const current = bytes.get(currentName);
+      if (current) {
+        current.rx += ibytes;
+        current.tx += obytes;
+      }
+    }
+  }
+  return bytes;
+};
+var parseProcNetDev = (text) => {
+  const bytes = new Map;
+  for (const line of text.split(`
+`)) {
+    if (/^Inter-|^face/.test(line))
+      continue;
+    const match = line.match(/^(\S+):\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+).*$/);
+    if (!match)
+      continue;
+    const name = match[1].replace(":", "");
+    const rx = Number(match[2]);
+    const tx = Number(match[10]);
+    if (!Number.isNaN(rx) && !Number.isNaN(tx)) {
+      bytes.set(name, { rx, tx });
+    }
+  }
+  return bytes;
+};
+var readNetworkStats = () => {
+  const platform = process.platform;
+  if (platform === "darwin") {
+    try {
+      const output = execSync("netstat -ib", { encoding: "utf8" });
+      const bytes = parseNetstatIbMacos(output);
+      let tx = 0;
+      let rx = 0;
+      for (const [name, value] of bytes) {
+        if (name === "lo0")
+          continue;
+        tx += value.tx;
+        rx += value.rx;
+      }
+      return { tx, rx };
+    } catch {
+      return { tx: 0, rx: 0 };
+    }
+  }
+  if (platform === "linux") {
+    try {
+      const text = readFileSync("/proc/net/dev", "utf8");
+      const bytes = parseProcNetDev(text);
+      let tx = 0;
+      let rx = 0;
+      for (const [name, value] of bytes) {
+        if (name === "lo")
+          continue;
+        tx += value.tx;
+        rx += value.rx;
+      }
+      return { tx, rx };
+    } catch {
+      return { tx: 0, rx: 0 };
+    }
+  }
+  return { tx: 0, rx: 0 };
+};
 var cpuTimes = () => os.cpus().map(({ times }) => ({
   idle: times.idle,
   total: times.user + times.nice + times.sys + times.idle + times.irq
@@ -1265,6 +1364,8 @@ class Sampler {
   commandCache = new Map;
   portsCache = new Map;
   portsWarning = false;
+  previousNetworkStats = null;
+  previousNetworkAt = 0;
   samples = 0;
   lastView = null;
   history = { system: { cpu: [], memory: [] }, app: { cpu: [], memory: [] } };
@@ -1279,6 +1380,8 @@ class Sampler {
     this.previousAt = 0;
     this.samples = 0;
     this.lastView = null;
+    this.previousNetworkStats = null;
+    this.previousNetworkAt = 0;
     this.history = { system: { cpu: [], memory: [] }, app: { cpu: [], memory: [] } };
   }
   systemCpu() {
@@ -1393,6 +1496,23 @@ class Sampler {
     } else {
       view = this.lastView ?? { rootName: "OpenChamber", cpu: 0, memory: 0, groups: [], servers: [], outside: [] };
     }
+    let networkSpeedUp = 0;
+    let networkSpeedDown = 0;
+    const nowAt = Date.now();
+    const currentBytes = readNetworkStats();
+    if (this.previousNetworkStats && this.previousNetworkAt > 0) {
+      const elapsed = (nowAt - this.previousNetworkAt) / 1000;
+      if (elapsed > 0) {
+        const deltaSent = currentBytes.tx - this.previousNetworkStats.tx;
+        const deltaReceived = currentBytes.rx - this.previousNetworkStats.rx;
+        if (deltaSent > 0)
+          networkSpeedUp = Math.max(0, deltaSent / elapsed);
+        if (deltaReceived > 0)
+          networkSpeedDown = Math.max(0, deltaReceived / elapsed);
+      }
+    }
+    this.previousNetworkAt = nowAt;
+    this.previousNetworkStats = currentBytes;
     const load = os.loadavg();
     const firstCpu = os.cpus()[0];
     const system = {
@@ -1406,7 +1526,9 @@ class Sampler {
       load: process.platform === "win32" ? null : [load[0] ?? 0, load[1] ?? 0, load[2] ?? 0],
       memoryTotal: os.totalmem(),
       memoryUsed,
-      uptimeSeconds: os.uptime()
+      uptimeSeconds: os.uptime(),
+      networkSpeedUp,
+      networkSpeedDown
     };
     if (systemCpu !== null) {
       push(this.history.system.cpu, systemCpu);

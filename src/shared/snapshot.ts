@@ -92,6 +92,10 @@ export interface SystemStats {
   memoryTotal: number;
   memoryUsed: number;
   uptimeSeconds: number;
+  /** Upload speed in bytes per second, computed from active interfaces. */
+  networkSpeedUp: number;
+  /** Download speed in bytes per second, computed from active interfaces. */
+  networkSpeedDown: number;
 }
 
 export type Warning =

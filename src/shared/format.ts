@@ -42,6 +42,26 @@ export const formatUptime = (seconds: number): string => {
   return `${minutes} min`;
 };
 
+/** Bytes per second, like `1.2 MB/s` or `0 KB/s`. */
+export const formatSpeed = (bytesPerSecond: number): string => {
+  if (bytesPerSecond === 0) return '0 KB/s';
+  if (bytesPerSecond <= 0) return '0 B/s';
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+  let value = bytesPerSecond;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit >= 3 && value < 100 ? 1 : 0;
+  return `${number(value, digits)} ${units[unit]}`;
+};
+
+/** Network row: upload and download speeds in a readable string. */
+export const formatNetworkSpeed = (up: number, down: number): string => {
+  return `上傳 ${formatSpeed(up)} · 下載 ${formatSpeed(down)}`;
+};
+
 /**
  * The arguments of a command line, without the executable's path: the row
  * already names the process. `/usr/local/bin/node server.js --port 3000`

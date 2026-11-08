@@ -1,6 +1,8 @@
 // Turns OS readings into a Snapshot, one sample at a time, and keeps the
 // short history the charts draw.
 import os from 'node:os';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 import type { RawProcess } from './parse.ts';
 import type { ProcessSource } from './sources.ts';
@@ -16,6 +18,101 @@ import { getLmStudioRunState } from './lm-studio-state.ts';
 export const SAMPLE_INTERVAL_MS = 2_000;
 /** Listening ports change rarely and cost the most to read, so every other sample. */
 const PORTS_EVERY = 2;
+
+interface NetworkStats { tx: number; rx: number }
+
+type Platform = typeof process.platform;
+
+const parseNetstatIbMacos = (output: string): Map<string, { tx: number; rx: number }> => {
+  const bytes = new Map<string, { tx: number; rx: number }>();
+  let currentName: string | null = null;
+  for (const line of output.split('\n')) {
+    if (/^Name/.test(line)) continue;
+    const parts = line.split(/\s+/).filter(Boolean);
+    if (parts.length < 10) continue;
+    // Only Link# row starts a new interface; other rows are continuation.
+    const isLinkRow = line.includes('<Link#');
+    if (isLinkRow) {
+      const match = line.match(/^(\S+)\s/);
+      currentName = match ? match[1] || null : null;
+      if (!currentName) continue;
+      if (!bytes.has(currentName)) {
+        bytes.set(currentName, { tx: 0, rx: 0 });
+      }
+    }
+    if (!currentName) continue;
+    let ibytes: number;
+    let obytes: number;
+    if (parts.length === 10) {
+      ibytes = Number(parts[5]);
+      obytes = Number(parts[8]);
+    } else {
+      ibytes = Number(parts[6]);
+      obytes = Number(parts[9]);
+    }
+    if (!Number.isNaN(ibytes) && !Number.isNaN(obytes)) {
+      const current = bytes.get(currentName);
+      if (current) {
+        current.rx += ibytes;
+        current.tx += obytes;
+      }
+    }
+  }
+  return bytes;
+};
+
+const parseProcNetDev = (text: string): Map<string, { tx: number; rx: number }> => {
+  const bytes = new Map<string, { tx: number; rx: number }>();
+  for (const line of text.split('\n')) {
+    if (/^Inter-|^face/.test(line)) continue;
+    const match = line.match(/^(\S+):\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+).*$/);
+    if (!match) continue;
+    const name = match[1]!.replace(':', '');
+    const rx = Number(match[2]!);
+    const tx = Number(match[10]!);
+    if (!Number.isNaN(rx) && !Number.isNaN(tx)) {
+      bytes.set(name, { rx, tx });
+    }
+  }
+  return bytes;
+};
+
+const readNetworkStats = (): { tx: number; rx: number } => {
+  const platform = process.platform;
+  if (platform === 'darwin') {
+    try {
+      const output = execSync('netstat -ib', { encoding: 'utf8' });
+      const bytes = parseNetstatIbMacos(output);
+      let tx = 0;
+      let rx = 0;
+      for (const [name, value] of bytes) {
+        if (name === 'lo0') continue;
+        tx += value.tx;
+        rx += value.rx;
+      }
+      return { tx, rx };
+    } catch {
+      return { tx: 0, rx: 0 };
+    }
+  }
+  if (platform === 'linux') {
+    try {
+      const text = readFileSync('/proc/net/dev', 'utf8');
+      const bytes = parseProcNetDev(text);
+      let tx = 0;
+      let rx = 0;
+      for (const [name, value] of bytes) {
+        if (name === 'lo') continue;
+        tx += value.tx;
+        rx += value.rx;
+      }
+      return { tx, rx };
+    } catch {
+      return { tx: 0, rx: 0 };
+    }
+  }
+  return { tx: 0, rx: 0 };
+};
 
 interface CpuTimes { idle: number; total: number }
 
@@ -38,6 +135,8 @@ export class Sampler {
   private commandCache = new Map<number, { name: string; command: string }>();
   private portsCache = new Map<number, number[]>();
   private portsWarning = false;
+  private previousNetworkStats: NetworkStats | null = null;
+  private previousNetworkAt = 0;
   private samples = 0;
   /** The last tree read that worked, shown again while the process list can't be read. */
   private lastView: TreeView | null = null;
@@ -56,6 +155,8 @@ export class Sampler {
     this.previousAt = 0;
     this.samples = 0;
     this.lastView = null;
+    this.previousNetworkStats = null;
+    this.previousNetworkAt = 0;
     this.history = { system: { cpu: [], memory: [] }, app: { cpu: [], memory: [] } };
   }
 
@@ -183,6 +284,23 @@ export class Sampler {
       view = this.lastView ?? { rootName: 'OpenChamber', cpu: 0, memory: 0, groups: [], servers: [], outside: [] };
     }
 
+    // Compute network throughput from active interfaces' cumulative bytes.
+    let networkSpeedUp = 0;
+    let networkSpeedDown = 0;
+    const nowAt = Date.now();
+    const currentBytes = readNetworkStats();
+    if (this.previousNetworkStats && this.previousNetworkAt > 0) {
+      const elapsed = (nowAt - this.previousNetworkAt) / 1000;
+      if (elapsed > 0) {
+        const deltaSent = currentBytes.tx - this.previousNetworkStats.tx;
+        const deltaReceived = currentBytes.rx - this.previousNetworkStats.rx;
+        if (deltaSent > 0) networkSpeedUp = Math.max(0, deltaSent / elapsed);
+        if (deltaReceived > 0) networkSpeedDown = Math.max(0, deltaReceived / elapsed);
+      }
+    }
+    this.previousNetworkAt = nowAt;
+    this.previousNetworkStats = currentBytes;
+
     const load = os.loadavg();
     const firstCpu = os.cpus()[0];
     const system: SystemStats = {
@@ -197,6 +315,8 @@ export class Sampler {
       memoryTotal: os.totalmem(),
       memoryUsed,
       uptimeSeconds: os.uptime(),
+      networkSpeedUp,
+      networkSpeedDown,
     };
 
     // Points without a CPU reading yet would draw a false zero.

@@ -3,7 +3,7 @@ import { connectHost } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 
 import { POLL_MS, portButton, type PollFailure } from '../shared/client.ts';
-import { formatBytes, formatPercent, formatPrefillPercent } from '../shared/format.ts';
+import { formatBytes, formatNetworkSpeed, formatPercent, formatPrefillPercent } from '../shared/format.ts';
 import { el } from '../shared/dom.ts';
 import { BASE_STYLE, PANEL_STYLE, STATUS_STYLE } from '../shared/style.ts';
 import { HISTORY_POINTS, type Snapshot } from '../shared/snapshot.ts';
@@ -60,6 +60,7 @@ const openchamberRow = lineRow(
 
 const cpuRow = lineRow('CPU', cpuMeter.element, '–');
 const memoryRow = lineRow('Memory', memoryMeter.element, '–');
+const networkRow = lineRow('Network', null, '—', 'Upload and download speed from active interfaces.');
 
 // ----- LM Studio rows -----
 
@@ -75,10 +76,10 @@ const portsList = el('div', 'ports');
 // ----- Build the DOM -----
 
 const note = el('div', 'note', 'Reading…');
-root.append(note, openchamberRow, cpuRow, memoryRow, lmStateRow, prefillRow, generateRow, portsRow);
+root.append(note, openchamberRow, cpuRow, memoryRow, networkRow, lmStateRow, prefillRow, generateRow, portsRow);
 
 const hideAll = (): void => {
-  for (const row of [openchamberRow, cpuRow, memoryRow, lmStateRow, prefillRow, generateRow, portsRow]) {
+  for (const row of [openchamberRow, cpuRow, memoryRow, networkRow, lmStateRow, prefillRow, generateRow, portsRow]) {
     row.hidden = true;
   }
 };
@@ -87,6 +88,7 @@ const showRows = (): void => {
   openchamberRow.hidden = false;
   cpuRow.hidden = false;
   memoryRow.hidden = false;
+  networkRow.hidden = false;
 };
 
 // ----- Rendering -----
@@ -104,6 +106,11 @@ const render = (snapshot: Snapshot): void => {
   const memoryPct = Math.round((system.memoryUsed / Math.max(1, system.memoryTotal)) * 100);
   memoryMeter.set(memoryPct);
   memoryRow.querySelector<HTMLElement>('.value')!.textContent = `${formatBytes(system.memoryUsed)} / ${formatBytes(system.memoryTotal)}`;
+
+  // Network
+  networkRow.hidden = false;
+  const networkValueEl = networkRow.querySelector<HTMLElement>('.value')!;
+  networkValueEl.textContent = formatNetworkSpeed(system.networkSpeedUp, system.networkSpeedDown);
 
   // OpenChamber row
   openchamberRow.hidden = snapshot.warnings.includes('processes-unavailable');
@@ -123,7 +130,7 @@ const render = (snapshot: Snapshot): void => {
   if (lmStudio.modelName) {
     switch (lmStudio.state) {
       case 'loaded':
-        stateLabel = currentDisplay;
+        stateLabel = currentDisplay ?? '—';
         break;
       case 'loading':
         stateLabel = `${currentDisplay} · 載入中 ${formatPrefillPercent(lmStudio.prefillProgress)}`;
@@ -135,7 +142,7 @@ const render = (snapshot: Snapshot): void => {
         stateLabel = currentDisplay ? `${currentDisplay} · 錯誤` : '錯誤';
         break;
       default:
-        stateLabel = currentDisplay;
+        stateLabel = currentDisplay ?? '—';
     }
   } else {
     switch (lmStudio.state) {
