@@ -218,7 +218,8 @@ export async function unloadActiveModels(): Promise<{ instanceIds: string[]; err
     const errors: Array<{ modelId: string; error: unknown }> = [];
 
     for (const model of models) {
-      const instances = model.loadedInstances ?? ([] as any[]);
+      // LM Studio v1 API returns the property name in lowercase: loaded_instances.
+      const instances = (model as any).loadedInstances ?? model.loaded_instances ?? ([] as any[]);
       for (const instance of instances) {
         const instanceId = instance.id as string;
         if (!instanceId) continue;

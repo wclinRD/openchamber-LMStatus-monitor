@@ -147,7 +147,7 @@ async function unloadActiveModels() {
     const loadedInstanceIds = [];
     const errors = [];
     for (const model of models) {
-      const instances = model.loadedInstances ?? [];
+      const instances = model.loadedInstances ?? model.loaded_instances ?? [];
       for (const instance of instances) {
         const instanceId = instance.id;
         if (!instanceId)
