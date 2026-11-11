@@ -145,6 +145,8 @@ var init_lmstudio = __esm(() => {
 
 // src/service/main.ts
 import http from "node:http";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 
 // src/service/sampler.ts
 import os from "node:os";
@@ -2066,7 +2068,8 @@ var json = (res, status, body) => {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify(body));
 };
-var server = http.createServer((req, res) => {
+var build = promisify(exec);
+var server = http.createServer(async (req, res) => {
   if (req.headers.authorization !== `Bearer ${token}`) {
     json(res, 401, { error: "unauthorized" });
     return;
@@ -2130,6 +2133,16 @@ var server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && url.pathname === "/log-status") {
     json(res, 200, getLogWatcherState());
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/build") {
+    try {
+      await build("bun run build", { cwd: process.cwd(), maxBuffer: 1024 * 512 });
+      json(res, 200, { ok: true });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Build failed";
+      json(res, 500, { ok: false, error: msg });
+    }
     return;
   }
   if (req.method !== "GET" || url.pathname !== "/snapshot") {

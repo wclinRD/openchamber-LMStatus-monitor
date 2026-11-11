@@ -1,4 +1,5 @@
 // Status section for the Work Status panel: shows system resources and LM Studio LLM status.
+import type { GuestStatusControl, GuestStatusControlEvent } from '@openchamber/sdk';
 import { connectHost } from '@openchamber/sdk';
 import { applyHostReady } from '@openchamber/sdk/ui';
 
@@ -89,6 +90,21 @@ const showRows = (): void => {
   cpuRow.hidden = false;
   memoryRow.hidden = false;
   networkRow.hidden = false;
+};
+
+// ----- Status controls (Refresh button in the section header) -----
+
+let statusControlsSupported = false;
+let publishedControls: GuestStatusControl[] | null = null;
+
+const statusControls = (): GuestStatusControl[] => [
+  { kind: 'button', id: 'refresh-build', label: 'Refresh' },
+];
+
+const publishStatusControls = async (): Promise<void> => {
+  if (!statusControlsSupported) return;
+  const controls = statusControls();
+  await host.setStatusControls(controls).catch(() => undefined);
 };
 
 // ----- Rendering -----
@@ -219,7 +235,23 @@ const render = (snapshot: Snapshot): void => {
   note.textContent = hasProcessWarning ? 'Could not read the process list; showing system totals only.' : '';
 };
 
-// ----- Polling -----
+// ----- Build trigger and polling integration -----
+
+let pollController: { refresh: () => void } | null = null;
+
+const startBuildAndRefresh = async (): Promise<void> => {
+  try {
+    const result = await host.serviceRequest({ method: 'POST', path: '/build' });
+    if (result.status === 200) {
+      void pollController?.refresh();
+    } else {
+      const error = result.body ? JSON.parse(result.body) as { error?: string } : null;
+      if (!pollController?.refresh) await host.toast({ kind: 'error', message: error?.error ?? 'Build failed' });
+    }
+  } catch {
+    // No immediate feedback; subsequent polling will surface a failure if relevant.
+  }
+};
 
 const FAILURE_TEXT: Record<string, string> = {
   'needs-approval': 'Allow the local service for LM Studio monitor in Settings → Extensions.',
@@ -242,14 +274,20 @@ host.onReady(async (context) => {
   if (started) return;
   started = true;
 
+  statusControlsSupported = context.features?.statusControls === true;
+  publishStatusControls();
+  host.onStatusControl((event) => {
+    if (event.id === 'refresh-build') startBuildAndRefresh();
+  });
+
   // Start polling the service for snapshots
   const { startPolling } = await import('../shared/client.ts');
-  const { refresh } = startPolling(host, root, (snapshot) => {
+  pollController = startPolling(host, root, (snapshot) => {
     render(snapshot);
   }, showFailure);
 
   // Initial fetch
-  void refresh();
+  void pollController?.refresh();
 });
 
 // ----- Resize handling -----
