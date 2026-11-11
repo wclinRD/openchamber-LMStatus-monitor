@@ -677,7 +677,6 @@ function getAggregateRunStateFromRequestStates() {
   }
   let maxPrefill = 0;
   let sumGenerate = 0;
-  let sumTps = 0;
   let maxPrefillTps = 0;
   let state = "idle";
   let chatStartAt = 0;
@@ -685,21 +684,16 @@ function getAggregateRunStateFromRequestStates() {
   let lastUpdateAt = 0;
   let finalPrefillSource = "rest_api";
   let finalGenerateSource = "rest_api";
-  let finalTpsSource = undefined;
-  let finalPrefillTpsSource = undefined;
   for (const s of states) {
     if (s.prefillProgress > maxPrefill) {
       maxPrefill = s.prefillProgress;
       finalPrefillSource = s.prefillSource ?? "proxy";
     }
-    if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > maxPrefillTps) {
-      maxPrefillTps = s.prefillTokensPerSecond;
-      finalPrefillTpsSource = s.prefillTpsSource ?? "proxy";
-    }
+    if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > maxPrefillTps) {}
     if (s.state === "prefill") {
       if (s.lastPrefillAt && s.lastPrefillAt > lastUpdateAt)
         lastUpdateAt = s.lastPrefillAt;
-      if (s.chatStartAt && s.chatStartAt < chatStartAt || chatStartAt === 0)
+      if (s.chatStartAt && (chatStartAt === 0 || s.chatStartAt < chatStartAt))
         chatStartAt = s.chatStartAt;
       if (state !== "generate")
         state = "prefill";
@@ -707,10 +701,6 @@ function getAggregateRunStateFromRequestStates() {
       sumGenerate += s.generateTokens;
       if (s.generateStartAt > 0 && (generateStartAt === 0 || s.generateStartAt < generateStartAt)) {
         generateStartAt = s.generateStartAt;
-      }
-      if (s.tokensPerSecond && s.tokensPerSecond > 0) {
-        sumTps += s.tokensPerSecond;
-        finalTpsSource = s.tpsSource ?? "proxy";
       }
       if (s.lastGenerateAt && s.lastGenerateAt > lastUpdateAt)
         lastUpdateAt = s.lastGenerateAt;
@@ -723,15 +713,13 @@ function getAggregateRunStateFromRequestStates() {
     state,
     prefillProgress: maxPrefill,
     generateTokens: sumGenerate,
-    tokensPerSecond: sumTps > 0 ? sumTps : undefined,
+    tokensPerSecond: undefined,
     prefillTokensPerSecond: maxPrefillTps > 0 ? maxPrefillTps : undefined,
     lastUpdateAt,
     chatStartAt,
     generateStartAt,
     prefillSource: finalPrefillSource,
-    generateSource: finalGenerateSource,
-    tpsSource: finalTpsSource,
-    prefillTpsSource: finalPrefillTpsSource
+    generateSource: finalGenerateSource
   };
 }
 function getBaselineState() {
@@ -971,22 +959,14 @@ async function proxyChatRequest(req, res, body) {
             } else if (eventType === "message.delta" && data) {
               const now2 = Date.now();
               currentGenerateTokens += 1;
-              let instantTps = undefined;
-              if (lastGenerateAt > 0) {
-                const deltaTime = (now2 - lastGenerateAt) / 1000;
-                const deltaTokens = currentGenerateTokens - lastGenerateTokens;
-                if (deltaTime > 0 && deltaTokens > 0) {
-                  instantTps = deltaTokens / deltaTime;
-                }
-              }
               lastGenerateTokens = currentGenerateTokens;
               lastGenerateAt = now2;
-              updateRequestGenerateOnlyFromProxy(reqId, currentGenerateTokens, instantTps);
+              updateRequestGenerateOnlyFromProxy(reqId, currentGenerateTokens);
               const ar = activeRequests.get(reqId);
               if (ar) {
                 ar.state = "generate";
                 ar.generateTokens = currentGenerateTokens;
-                ar.tokensPerSecond = instantTps ?? 0;
+                ar.tokensPerSecond = 0;
                 ar.lastGenTokens = currentGenerateTokens;
                 ar.lastGenAt = now2;
               }
@@ -1589,9 +1569,12 @@ class Sampler {
     const runState = requestCount > 1 ? getAggregateRunStateFromActiveRequests() : getLmStudioRunState();
     let computedTps = runState.tokensPerSecond;
     if (runState.generateTokens > 0 && runState.generateStartAt > 0) {
-      const elapsed = (Date.now() - runState.generateStartAt) / 1000;
-      if (elapsed > 0) {
-        computedTps = runState.generateTokens / elapsed;
+      const rawElapsed = (Date.now() - runState.generateStartAt) / 1000;
+      const effectiveElapsed = Math.max(rawElapsed, 0.2);
+      if (effectiveElapsed > 0) {
+        computedTps = runState.generateTokens / effectiveElapsed;
+      } else {
+        computedTps = undefined;
       }
     }
     const parallel = lmStudioBase.models?.find((m) => m.id === lmStudioBase.modelName)?.parallel || lmStudioBase.models?.find((m) => m.loadedInstances?.length)?.parallel || (lmStudioBase.models?.find((m) => m.loadedInstances?.[0]?.config?.parallel) ? lmStudioBase.models.find((m) => m.loadedInstances?.[0]?.config?.parallel).loadedInstances[0].config.parallel : undefined);
