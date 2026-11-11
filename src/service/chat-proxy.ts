@@ -304,24 +304,20 @@ export async function proxyChatRequest(
             } else if (eventType === "message.delta" && data) {
               const now = Date.now();
               currentGenerateTokens += 1;
-              let instantTps: number | undefined = undefined;
-              if (lastGenerateAt > 0) {
-                const deltaTime = (now - lastGenerateAt) / 1000;
-                const deltaTokens = currentGenerateTokens - lastGenerateTokens;
-                if (deltaTime > 0 && deltaTokens > 0) {
-                  instantTps = deltaTokens / deltaTime;
-                }
-              }
+
               lastGenerateTokens = currentGenerateTokens;
               lastGenerateAt = now;
-              updateRequestGenerateOnlyFromProxy(reqId, currentGenerateTokens, instantTps);
+              // Do not pass per-delta instantaneous TPS. Overall generation speed is computed
+              // as total tokens / elapsed since the first generated token in sampler.ts.
+              updateRequestGenerateOnlyFromProxy(reqId, currentGenerateTokens);
               const ar = activeRequests.get(reqId);
               if (ar) {
                 // In multi-thread/concurrent inference, a model may still be prefilling while generating new tokens.
                 // Keep prefillProgress from the latest prompt_processing.progress and do not set it to 100 here.
                 ar.state = 'generate';
                 ar.generateTokens = currentGenerateTokens;
-                ar.tokensPerSecond = instantTps ?? 0;
+                // Overall Generate TPS is supplied by snapshot averages, not per-delta rate.
+                ar.tokensPerSecond = 0;
                 ar.lastGenTokens = currentGenerateTokens;
                 ar.lastGenAt = now;
               }
