@@ -200,3 +200,50 @@ export function formatGenerateTokens(tokens: number): string {
   if (tokens === 0) return '0';
   return tokens.toLocaleString();
 }
+
+/** Unloads all currently loaded model instances by calling LM Studio's /api/v1/models/unload endpoint. */
+export async function unloadActiveModels(): Promise<{ instanceIds: string[]; errors: Array<{ modelId: string; error: unknown }> }> {
+  try {
+    const v1Response = await fetch(`${LM_STUDIO_URL}/api/v1/models`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    if (!v1Response.ok) throw new Error(`HTTP ${v1Response.status}`);
+    const v1Data = await v1Response.json() as { models?: Array<{ id: string; loadedInstances?: Array<{ id: string }>; [key: string]: any }> };
+    const models = v1Data.models ?? [];
+
+    const loadedInstanceIds: string[] = [];
+    const errors: Array<{ modelId: string; error: unknown }> = [];
+
+    for (const model of models) {
+      const instances = model.loadedInstances ?? ([] as any[]);
+      for (const instance of instances) {
+        const instanceId = instance.id as string;
+        if (!instanceId) continue;
+
+        const unloadRes = await fetch(`${LM_STUDIO_URL}/api/v1/models/unload`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ instance_id: instanceId }),
+        });
+        if (unloadRes.ok) loadedInstanceIds.push(instanceId);
+        else errors.push({ modelId: model.id || 'unknown', error: await unloadRes.text() });
+      }
+    }
+
+    return { instanceIds: loadedInstanceIds, errors };
+  } catch (error) {
+    return { instanceIds: [], errors: [ { modelId: 'current', error } ] };
+  }
+}
+
+export function hasActiveModel(): boolean {
+  const models = currentStatus.models ?? ([] as any[]);
+  return models.some(
+    (model: any) => model.loadedInstances?.length && !!model.loadedInstances[0].id || ((model as any).loaded_instances ?? []).length > 0
+  );
+}

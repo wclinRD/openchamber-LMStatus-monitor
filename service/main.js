@@ -20,7 +20,9 @@ __export(exports_lmstudio, {
   fetchLmStudioStatus: () => fetchLmStudioStatus,
   formatGenerateTokens: () => formatGenerateTokens,
   formatPrefillProgress: () => formatPrefillProgress,
+  hasActiveModel: () => hasActiveModel,
   stateLabel: () => stateLabel,
+  unloadActiveModels: () => unloadActiveModels,
   updateFromUsage: () => updateFromUsage
 });
 function updateFromUsage(usage) {
@@ -129,6 +131,48 @@ function formatGenerateTokens(tokens) {
   if (tokens === 0)
     return "0";
   return tokens.toLocaleString();
+}
+async function unloadActiveModels() {
+  try {
+    const v1Response = await fetch(`${LM_STUDIO_URL}/api/v1/models`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+    if (!v1Response.ok)
+      throw new Error(`HTTP ${v1Response.status}`);
+    const v1Data = await v1Response.json();
+    const models = v1Data.models ?? [];
+    const loadedInstanceIds = [];
+    const errors = [];
+    for (const model of models) {
+      const instances = model.loadedInstances ?? [];
+      for (const instance of instances) {
+        const instanceId = instance.id;
+        if (!instanceId)
+          continue;
+        const unloadRes = await fetch(`${LM_STUDIO_URL}/api/v1/models/unload`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ instance_id: instanceId })
+        });
+        if (unloadRes.ok)
+          loadedInstanceIds.push(instanceId);
+        else
+          errors.push({ modelId: model.id || "unknown", error: await unloadRes.text() });
+      }
+    }
+    return { instanceIds: loadedInstanceIds, errors };
+  } catch (error) {
+    return { instanceIds: [], errors: [{ modelId: "current", error }] };
+  }
+}
+function hasActiveModel() {
+  const models = currentStatus.models ?? [];
+  return models.some((model) => model.loadedInstances?.length && !!model.loadedInstances[0].id || (model.loaded_instances ?? []).length > 0);
 }
 var LM_STUDIO_HOST = "127.0.0.1", LM_STUDIO_PORT = 1234, LM_STUDIO_URL, LM_STUDIO_V1_URL, currentStatus;
 var init_lmstudio = __esm(() => {
@@ -2004,6 +2048,7 @@ var createProcessSource = () => {
 };
 
 // src/service/main.ts
+init_lmstudio();
 var port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
 var token = process.env.OPENCHAMBER_SERVICE_TOKEN ?? "";
 if (!port || !token) {
@@ -2143,6 +2188,15 @@ var server = http.createServer(async (req, res) => {
       const msg = error instanceof Error ? error.message : "Build failed";
       json(res, 500, { ok: false, error: msg });
     }
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/unload") {
+    const result = await unloadActiveModels();
+    if (result.errors.length > 0 || result.instanceIds.length === 0) {
+      json(res, result.errors.length > 0 ? 500 : 409, { error: "no-loaded-model", instanceIds: [], errors: result.errors });
+      return;
+    }
+    json(res, 200, { instanceIds: result.instanceIds });
     return;
   }
   if (req.method !== "GET" || url.pathname !== "/snapshot") {

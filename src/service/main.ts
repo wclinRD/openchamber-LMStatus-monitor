@@ -17,6 +17,7 @@ import { parseStopTarget } from './stop.ts';
 import { proxyChatRequest, getPrefillProgress, getGenerateTokens } from './chat-proxy.ts';
 import { lmStudioSseClients, pushLmStudioEvent } from './lm-studio-events.ts';
 import { startLogWatcher, getPrefillProgress as getPrefillProgressFromLog, getGenerateTokens as getGenerateTokensFromLog, getLogWatcherState } from './lm-studio-log-parser.ts';
+import { unloadActiveModels, hasActiveModel } from './lmstudio.ts';
 import type { Snapshot, LmStudioEvent } from '../shared/snapshot.ts';
 
 const port = Number(process.env.OPENCHAMBER_SERVICE_PORT);
@@ -172,6 +173,15 @@ const server = http.createServer(async (req, res) => {
       const msg = error instanceof Error ? error.message : 'Build failed';
       json(res, 500, { ok: false, error: msg });
     }
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/unload') {
+    const result = await unloadActiveModels();
+    if (result.errors.length > 0 || result.instanceIds.length === 0) {
+      json(res, result.errors.length > 0 ? 500 : 409, { error: 'no-loaded-model', instanceIds: [], errors: result.errors });
+      return;
+    }
+    json(res, 200, { instanceIds: result.instanceIds });
     return;
   }
   if (req.method !== 'GET' || url.pathname !== '/snapshot') {

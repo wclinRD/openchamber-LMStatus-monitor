@@ -98,6 +98,7 @@ let statusControlsSupported = false;
 let publishedControls: GuestStatusControl[] | null = null;
 
 const statusControls = (): GuestStatusControl[] => [
+  { kind: 'button', id: 'eject-model', label: 'Eject' },
   { kind: 'button', id: 'refresh-build', label: 'Refresh' },
 ];
 
@@ -253,6 +254,23 @@ const startBuildAndRefresh = async (): Promise<void> => {
   }
 };
 
+const ejectModelAndRefresh = async (): Promise<void> => {
+  try {
+    const result = await host.serviceRequest({ method: 'POST', path: '/unload' });
+    if (result.status === 200) {
+      void pollController?.refresh();
+    } else if (result.status === 409) {
+      const error = result.body ? JSON.parse(result.body) as { error?: string } : null;
+      await host.toast({ kind: 'info', message: error?.error === 'no-loaded-model' ? 'No model currently loaded.' : (error.error ?? 'Unloading failed') });
+    } else {
+      const error = result.body ? JSON.parse(result.body) as { error?: string } : null;
+      if (!pollController?.refresh) await host.toast({ kind: 'error', message: error?.error ?? 'Loading/unload failed' });
+    }
+  } catch {
+    // The next poll will show failure if relevant.
+  }
+};
+
 const FAILURE_TEXT: Record<string, string> = {
   'needs-approval': 'Allow the local service for LM Studio monitor in Settings → Extensions.',
   'paused': 'LM Studio monitor is paused in Settings → Extensions.',
@@ -277,7 +295,8 @@ host.onReady(async (context) => {
   statusControlsSupported = context.features?.statusControls === true;
   publishStatusControls();
   host.onStatusControl((event) => {
-    if (event.id === 'refresh-build') startBuildAndRefresh();
+    if (event.id === 'eject-model') void ejectModelAndRefresh();
+    else if (event.id === 'refresh-build') startBuildAndRefresh();
   });
 
   // Start polling the service for snapshots
