@@ -74,9 +74,13 @@ export const startPolling = (
   let inflight = false;
   let pollingInterval = POLL_MS;
   const poll = async (): Promise<void> => {
-    if (inflight || !isOnScreen(root)) return;
+    if (inflight) return;
+
     inflight = true;
     try {
+      // If off-screen, skip the service request but continue scheduling. This ensures we wake up when the frame becomes visible again (including during session-switch animation).
+      if (!isOnScreen(root)) return;
+
       const result = await host.serviceRequest({ method: 'GET', path: '/snapshot' });
       let body: unknown;
       try {
@@ -96,7 +100,7 @@ export const startPolling = (
       onFailure(failureOf(error));
     } finally {
       inflight = false;
-      // Schedule next poll with the current interval
+      // Always schedule the next poll. Even when off-screen, we keep an alive ticker so visibility changes can be detected immediately or the scheduler itself survives.
       setTimeout(() => { void poll(); }, pollingInterval);
     }
   };
@@ -110,6 +114,8 @@ export const startPolling = (
     shown = next;
   };
   document.addEventListener('visibilitychange', onVisibility);
-  new ResizeObserver(onVisibility).observe(document.documentElement);
+  const ro = new ResizeObserver(onVisibility);
+  ro.observe(document.documentElement);
+  ro.observe(root);
   return { refresh: () => { void poll(); } };
 };

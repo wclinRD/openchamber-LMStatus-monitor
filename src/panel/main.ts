@@ -612,4 +612,22 @@ host.onReady((context) => {
     failure = null;
     render(snapshot);
   }, showFailure));
+
+  // Wake polling when the OpenChamber session/project changes.
+  let previousDirectory: string | null = null;
+  host.onDirectory((dir) => {
+    if (previousDirectory !== dir) {
+      previousDirectory = dir;
+      refresh();
+    }
+  });
+
+  let previousSessionId: string | null = null;
+  host.onSession((session) => {
+    const id = session?.id ?? '';
+    if (previousSessionId !== id) {
+      previousSessionId = id;
+      refresh();
+    }
+  });
 });

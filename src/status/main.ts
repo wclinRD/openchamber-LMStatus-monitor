@@ -288,6 +288,24 @@ host.onReady(async (context) => {
 
   // Initial fetch
   void pollController?.refresh();
+
+  // Re-publish controls when directory or session changes, so the host refresh button stays visible across context switches.
+  let previousDirectory: string | null = null;
+  host.onDirectory((dir) => {
+    if (previousDirectory !== dir) {
+      previousDirectory = dir;
+      void publishStatusControls();
+    }
+  });
+
+  let previousSessionId: string | null = null;
+  host.onSession((session) => {
+    const id = session?.id ?? '';
+    if (previousSessionId !== id) {
+      previousSessionId = id;
+      void publishStatusControls();
+    }
+  });
 });
 
 // ----- Resize handling & re-publish controls when section becomes visible again -----
