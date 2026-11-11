@@ -34,8 +34,12 @@ describe('generate TPS timing', () => {
     const started = getLmStudioRunState();
     expect(started.generateStartAt).toBeGreaterThan(started.chatStartAt);
 
-    await sleep(60);
+    // Wait at least 250ms so raw elapsed exceeds the minimum elapsed threshold (~0.2s).
+    await sleep(250);
     updateRequestGenerateOnlyFromProxy(reqId, 20);
+
+    // Wait another short moment so TPS is updated from the final token count.
+    await sleep(60);
 
     const state = getLmStudioRunStateWithComputedTps();
     const tps = state.tokensPerSecond;

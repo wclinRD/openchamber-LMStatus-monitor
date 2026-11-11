@@ -28,6 +28,8 @@ export interface RequestState extends Omit<LmStudioRunState, 'state'> {
   lastPrefillTpsAt?: number;
 }
 
+const MIN_ELAPSED_GENERATE_SECS = 0.2;
+
 const baseDefault = {
   prefillProgress: 0,
   generateTokens: 0,
@@ -63,10 +65,12 @@ function computeTokensPerSecond(generateTokens: number, state: Pick<LmStudioRunS
   if (generateTokens <= 0) return undefined;
   const now = Date.now();
   // Measure from the first generated token, not from chat start: prefill time
-  // must not dilute the generate speed.
+  // must not dilute the generate speed. Avoid extreme spikes when only a few tokens have been
+  // produced in an extremely short time. Use a minimum elapsed time as denominator protection.
   const startAt = state.generateStartAt > 0 ? state.generateStartAt : state.lastUpdateAt;
-  const elapsed = startAt > 0 ? (now - startAt) / 1000 : 0;
-  return elapsed > 0 ? generateTokens / elapsed : undefined;
+  const rawElapsed = startAt > 0 ? (now - startAt) / 1000 : 0;
+  const effectiveElapsed = Math.max(rawElapsed, MIN_ELAPSED_GENERATE_SECS);
+  return effectiveElapsed > 0 ? generateTokens / effectiveElapsed : undefined;
 }
 
 /** Internal function: update a specific request's state. */

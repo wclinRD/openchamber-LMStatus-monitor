@@ -337,9 +337,13 @@ export class Sampler {
     // the first generated token. Prefill time must not count towards generate speed.
     let computedTps: number | undefined = runState.tokensPerSecond;
     if (runState.generateTokens > 0 && runState.generateStartAt > 0) {
-      const elapsed = (Date.now() - runState.generateStartAt) / 1000;
-      if (elapsed > 0) {
-        computedTps = runState.generateTokens / elapsed;
+      const rawElapsed = (Date.now() - runState.generateStartAt) / 1000;
+      // Avoid extreme spikes when only a few tokens have been produced very quickly.
+      const effectiveElapsed = Math.max(rawElapsed, 0.2);
+      if (effectiveElapsed > 0) {
+        computedTps = runState.generateTokens / effectiveElapsed;
+      } else {
+        computedTps = undefined;
       }
     }
 
