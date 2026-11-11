@@ -290,7 +290,7 @@ host.onReady(async (context) => {
   void pollController?.refresh();
 });
 
-// ----- Resize handling -----
+// ----- Resize handling & re-publish controls when section becomes visible again -----
 
 let lastHeight = -1;
 new ResizeObserver(() => {
@@ -298,4 +298,14 @@ new ResizeObserver(() => {
   if (height === lastHeight) return;
   lastHeight = height;
   void host.setHeight(height).catch(() => undefined);
+  // If the section header was collapsed and now has positive height, re-publish controls so host shows them.
+  if (statusControlsSupported && lastHeight > 0) void publishStatusControls();
 }).observe(root);
+
+// Also re-publish controls when coming back from hidden document state.
+document.addEventListener('visibilitychange', () => {
+  if (statusControlsSupported && document.visibilityState === 'visible') void publishStatusControls();
+});
+
+// Re-publish controls right after they have been set on ready.
+publishStatusControls().catch(() => undefined);
