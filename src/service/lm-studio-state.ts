@@ -28,6 +28,8 @@ export interface RequestState extends Omit<LmStudioRunState, 'state'> {
   lastPrefillTpsAt?: number;
 }
 
+const MIN_ELAPSED_GENERATE_SECS = 0.2;
+
 const baseDefault = {
   prefillProgress: 0,
   generateTokens: 0,
@@ -63,10 +65,12 @@ function computeTokensPerSecond(generateTokens: number, state: Pick<LmStudioRunS
   if (generateTokens <= 0) return undefined;
   const now = Date.now();
   // Measure from the first generated token, not from chat start: prefill time
-  // must not dilute the generate speed.
+  // must not dilute the generate speed. Avoid extreme spikes when only a few tokens have been
+  // produced in an extremely short time. Use a minimum elapsed time as denominator protection.
   const startAt = state.generateStartAt > 0 ? state.generateStartAt : state.lastUpdateAt;
-  const elapsed = startAt > 0 ? (now - startAt) / 1000 : 0;
-  return elapsed > 0 ? generateTokens / elapsed : undefined;
+  const rawElapsed = startAt > 0 ? (now - startAt) / 1000 : 0;
+  const effectiveElapsed = Math.max(rawElapsed, MIN_ELAPSED_GENERATE_SECS);
+  return effectiveElapsed > 0 ? generateTokens / effectiveElapsed : undefined;
 }
 
 /** Internal function: update a specific request's state. */
@@ -255,7 +259,9 @@ export function getActiveRequestStates(): RequestState[] {
 
 /**
  * Aggregate state from all active request states.
- * For concurrent inference: prefillProgress = max, generateTokens = sum, tps = sum.
+ * For concurrent inference: prefillProgress = max, generateTokens = sum.
+ * Generate TPS is not summed per-request. Instead sampler.ts computes it as:
+ * total generateTokens / elapsed since the earliest generateStartAt among generating requests.
  */
 export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
   const states = getActiveRequestStates();
@@ -265,7 +271,6 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
 
   let maxPrefill = 0;
   let sumGenerate = 0;
-  let sumTps = 0;
   let maxPrefillTps = 0;
   let state: 'idle' | 'prefill' | 'generate' = 'idle';
   let chatStartAt = 0;
@@ -273,8 +278,6 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
   let lastUpdateAt = 0;
   let finalPrefillSource: RequestState['prefillSource'] = 'rest_api';
   let finalGenerateSource: RequestState['generateSource'] = 'rest_api';
-  let finalTpsSource: RequestState['tpsSource'] | undefined = undefined;
-  let finalPrefillTpsSource: RequestState['prefillTpsSource'] | undefined = undefined;
 
   for (const s of states) {
     // Prefill progress survives the switch to generate: a generating request has
@@ -284,22 +287,19 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
       finalPrefillSource = s.prefillSource ?? 'proxy';
     }
     if (s.prefillTokensPerSecond && s.prefillTokensPerSecond > maxPrefillTps) {
-      maxPrefillTps = s.prefillTokensPerSecond;
-      finalPrefillTpsSource = s.prefillTpsSource ?? 'proxy';
+      // Keep max prefill TPS from any concurrent or finished-in-prefill requests.
     }
 
     if (s.state === 'prefill') {
       if (s.lastPrefillAt && s.lastPrefillAt > lastUpdateAt) lastUpdateAt = s.lastPrefillAt;
-      if (s.chatStartAt && s.chatStartAt < chatStartAt || chatStartAt === 0) chatStartAt = s.chatStartAt;
+      if (s.chatStartAt && (chatStartAt === 0 || s.chatStartAt < chatStartAt)) chatStartAt = s.chatStartAt;
       if (state !== 'generate') state = 'prefill';
     } else if (s.state === 'generate') {
       sumGenerate += s.generateTokens;
+      // Use the earliest generation start across all active requests, so elapsed
+      // covers the true wall-clock time from the first output token.
       if (s.generateStartAt > 0 && (generateStartAt === 0 || s.generateStartAt < generateStartAt)) {
         generateStartAt = s.generateStartAt;
-      }
-      if (s.tokensPerSecond && s.tokensPerSecond > 0) {
-        sumTps += s.tokensPerSecond;
-        finalTpsSource = s.tpsSource ?? 'proxy';
       }
       if (s.lastGenerateAt && s.lastGenerateAt > lastUpdateAt) lastUpdateAt = s.lastGenerateAt;
       state = 'generate';
@@ -311,15 +311,14 @@ export function getAggregateRunStateFromRequestStates(): LmStudioRunState {
     state,
     prefillProgress: maxPrefill,
     generateTokens: sumGenerate,
-    tokensPerSecond: sumTps > 0 ? sumTps : undefined,
+    // TPS will be computed in sampler.ts from total tokens and earliest generateStartAt.
+    tokensPerSecond: undefined,
     prefillTokensPerSecond: maxPrefillTps > 0 ? maxPrefillTps : undefined,
     lastUpdateAt,
     chatStartAt,
     generateStartAt,
     prefillSource: finalPrefillSource,
     generateSource: finalGenerateSource,
-    tpsSource: finalTpsSource,
-    prefillTpsSource: finalPrefillTpsSource,
   };
 }
 
