@@ -1158,115 +1158,146 @@ function startLogWatcher() {
   console.log("[LM Log Watcher] Starting file-based log watcher for real-time updates");
   startFileLogWatcher();
 }
-function startFileLogWatcher() {
-  const home = process.env.HOME ?? "/Users/wclin";
-  const logDir = path.join(home, ".lmstudio", "server-logs");
-  try {
-    const latestLogFile = getLatestLogFile(logDir);
-    if (!latestLogFile) {
-      console.log("[LM File Watcher] No log files found in", logDir);
-      setWatcherState({ method: "file", latestLogFile: null, error: "No log files found" });
-      return;
-    }
-    setWatcherState({ latestLogFile, method: "file", isWatching: true });
-    console.log(`[LM File Watcher] Watching log file: ${latestLogFile}`);
-    const watcher = fs.watchFile(latestLogFile, { persistent: true, interval: 1000 }, () => {
-      try {
-        const content = fs.readFileSync(latestLogFile, "utf8");
-        const lines = content.split(`
+var activeLogPath = null;
+var rotationCheckInterval = null;
+var baseLogDir = null;
+function startWatching(activePath) {
+  setWatcherState({ method: "file", latestLogFile: activePath, isWatching: true });
+  console.log(`[LM File Watcher] Watching log file: ${activePath}`);
+  const watcher = fs.watchFile(activePath, { persistent: true, interval: 1000 }, () => {
+    try {
+      const content = fs.readFileSync(activePath, "utf8");
+      const lines = content.split(`
 `).filter(Boolean);
-        let latestEventType = null;
-        let latestPrefillProgress = null;
-        let latestPrefillIndex = -1;
-        for (let i = lines.length - 1;i >= 0; i--) {
+      let latestEventType = null;
+      let latestPrefillProgress = null;
+      let latestPrefillIndex = -1;
+      for (let i = lines.length - 1;i >= 0; i--) {
+        const line = lines[i];
+        if (!line)
+          continue;
+        if (line.includes("Finished streaming response") || line.includes("chat completion") || line.includes("generation complete") || line.includes("Prompt processing complete")) {
+          latestEventType = "chat-end";
+          break;
+        }
+        const entry = parseLogLine(line);
+        if (entry?.type === "prefill-progress" && entry.progress !== undefined) {
+          latestEventType = "prefill-progress";
+          latestPrefillProgress = entry.progress;
+          latestPrefillIndex = i;
+          break;
+        } else if (entry?.type === "model-output") {} else if (entry?.type === "chat-end") {} else if (entry?.type === "model-input") {}
+      }
+      if (latestEventType === "chat-end") {
+        if (getActiveRequestCount() === 0) {
+          resetLmStudioStats();
+        }
+        console.log("[LM File Watcher] chat-end detected");
+      } else if (latestEventType === "prefill-progress") {
+        updatePrefillProgressFromLog(latestPrefillProgress);
+        console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
+        if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
+          updateRequestStateFromLog("global-fallback", 0, 0);
+          generatedPacketCount = 0;
+          console.log("[LM File Watcher] Switched back to prefill phase, cleared generate counter");
+        }
+      }
+      let packetCount = 0;
+      if (latestEventType === "prefill-progress" || latestEventType === null) {
+        const startIndex = latestPrefillIndex >= 0 ? latestPrefillIndex : 0;
+        for (let i = startIndex;i < lines.length; i++) {
           const line = lines[i];
-          if (!line)
-            continue;
-          if (line.includes("Finished streaming response") || line.includes("chat completion") || line.includes("generation complete") || line.includes("Prompt processing complete")) {
-            latestEventType = "chat-end";
-            break;
-          }
-          const entry = parseLogLine(line);
-          if (entry?.type === "prefill-progress" && entry.progress !== undefined) {
-            latestEventType = "prefill-progress";
-            latestPrefillProgress = entry.progress;
-            latestPrefillIndex = i;
-            break;
+          if (line && line.includes("Generated packet")) {
+            packetCount++;
           }
         }
-        if (latestEventType === "chat-end") {
-          if (getActiveRequestCount() === 0) {
-            resetLmStudioStats();
-          }
-          console.log("[LM File Watcher] chat-end detected");
-        } else if (latestEventType === "prefill-progress") {
-          updatePrefillProgressFromLog(latestPrefillProgress);
-          console.log(`[LM File Watcher] prefill_progress: ${latestPrefillProgress}%`);
-          if (getActiveRequestCount() === 0 && (getLmStudioRunState().generateTokens > 0 || generatedPacketCount > 0)) {
-            updateRequestStateFromLog("global-fallback", 0, 0);
-            generatedPacketCount = 0;
-            console.log("[LM File Watcher] Switched back to prefill phase, cleared generate counter");
-          }
-        }
-        let packetCount = 0;
-        if (latestEventType === "prefill-progress" || latestEventType === null) {
-          const startIndex = latestPrefillIndex >= 0 ? latestPrefillIndex : 0;
-          for (let i = startIndex;i < lines.length; i++) {
-            const line = lines[i];
-            if (line && line.includes("Generated packet")) {
-              packetCount++;
-            }
-          }
-        }
-        if (packetCount > 0) {
-          generatedPacketCount = packetCount;
-          updateRequestLogGenerateOnly("global-fallback", packetCount);
-          console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
-        } else if (latestEventType === "chat-end") {
-          if (getActiveRequestCount() === 0) {
-            generatedPacketCount = 0;
-            updateRequestStateFromLog("global-fallback", 0, 0);
-          }
-        }
-      } catch (error) {
-        console.error("[LM File Watcher] Error reading log file:", error.message);
       }
-    });
-    logWatcher = {
-      stdout: { on: () => {} },
-      stderr: { on: () => {} },
-      on: () => {},
-      kill: () => {
-        fs.unwatchFile(latestLogFile);
+      if (packetCount > 0) {
+        generatedPacketCount = packetCount;
+        updateRequestLogGenerateOnly("global-fallback", packetCount);
+        console.log(`[LM File Watcher] generated_packets: ${packetCount}`);
+      } else if (latestEventType === "chat-end") {
+        if (getActiveRequestCount() === 0) {
+          generatedPacketCount = 0;
+          updateRequestStateFromLog("global-fallback", 0, 0);
+        }
       }
-    };
-  } catch (error) {
-    console.error("[LM File Watcher] Failed to start file watcher:", error.message);
-    setWatcherState({ method: "file", latestLogFile: null, error: error.message });
+    } catch (error) {
+      console.error("[LM File Watcher] Error reading log file:", error);
+    }
+  });
+  logWatcher = {
+    stdout: { on: () => {} },
+    stderr: { on: () => {} },
+    on: () => {},
+    kill: () => {
+      fs.unwatchFile(activePath);
+    }
+  };
+  activeLogPath = activePath;
+}
+function startFileLogWatcher() {
+  if (logWatcher || activeLogPath)
+    return;
+  const home = process.env.HOME ?? "/Users/wclin";
+  baseLogDir = path.join(home, ".lmstudio", "server-logs");
+  if (!rotationCheckInterval) {
+    rotationCheckInterval = setInterval(() => {
+      if (!baseLogDir || !activeLogPath)
+        return;
+      const newLatest = getLatestLogFile(baseLogDir);
+      if (!newLatest)
+        return;
+      if (activeLogPath !== newLatest) {
+        console.log(`[LM File Watcher] Log rotation detected: ${activeLogPath} -> ${newLatest}`);
+        rotateTo(newLatest);
+      }
+    }, 1e4);
+  }
+  const latestFile = getLatestLogFile(baseLogDir);
+  if (latestFile) {
+    rotateTo(latestFile);
+  } else {
+    console.log("[LM File Watcher] No log files found in", baseLogDir);
+    setWatcherState({ method: "file", latestLogFile: null, error: "No log files found" });
   }
 }
-function getLatestLogFile(logDir) {
-  try {
-    const now = new Date;
-    const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    const dir = path.join(logDir, yearMonth);
-    const entries = fs.readdirSync(dir).filter((f) => typeof f === "string" && f.endsWith(".log")).map((f) => {
-      const fullPath = path.join(dir, f);
-      try {
-        const stat = fs.statSync(fullPath);
-        return { path: fullPath, mtimeMs: stat.mtimeMs };
-      } catch {
-        return null;
-      }
-    }).filter((f) => f !== null);
-    if (entries.length === 0)
-      return null;
-    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const first = entries[0];
-    return first ? first.path : null;
-  } catch {
-    return null;
+function rotateTo(newestPath) {
+  if (activeLogPath === newestPath)
+    return;
+  if (activeLogPath) {
+    try {
+      fs.unwatchFile(activeLogPath);
+    } catch {}
   }
+  startWatching(newestPath);
+}
+function collectLogFilesUnder(dir) {
+  const result = [];
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        result.push(...collectLogFilesUnder(fullPath));
+      } else if (entry.isFile() && entry.name.endsWith(".log")) {
+        try {
+          const stat = fs.statSync(fullPath);
+          result.push({ path: fullPath, mtimeMs: stat.mtimeMs });
+        } catch {}
+      }
+    }
+  } catch {}
+  return result.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+function getLatestLogFile(logDir) {
+  const files = collectLogFilesUnder(logDir);
+  if (files.length === 0)
+    return null;
+  const best = files[0];
+  if (!best || !fs.existsSync(best.path))
+    return null;
+  return best.path;
 }
 
 // src/service/sampler.ts
